@@ -157,18 +157,28 @@ def _RmSmLm(x, y, phi):
 # ── CCC 类型（Formula 8.7 - 8.10）─────────────────────────────────────────
 
 def _LpRmLp(x, y, phi):
-    """L+R-L+"""
+    """L+R-L+
+    在标准 RS 坐标系（forward=+x）内：
+      t + u + v = phi (mod 2pi)，三段均增大 heading。
+    端点方程推导（r=1，t+u+v=phi）：
+      2*sin(t) - 2*sin(t+u) = x - sin(phi) = xi
+      2*cos(t+u) - 2*cos(t) = y - 1 + cos(phi) = eta
+    令 C = t + u/2, D = u/2：
+      -4*cos(C)*sin(D) = xi, -4*sin(C)*sin(D) = eta
+    => sin(D) = sqrt(xi^2+eta^2)/4
+       C = atan2(-eta, -xi) = atan2(eta, xi) + π = theta + π
+       t = C - D = theta + π - A/2
+       v = phi - t - u = phi - (theta + π) - A/2 (mod 2pi)
+    """
     xi = x - math.sin(phi)
     eta = y - 1.0 + math.cos(phi)
-    u1, theta = _polar(xi, eta)
+    u1, theta = _polar(xi, eta)   # theta = atan2(eta, xi) ∈ [0, 2π)
     if u1 > 4.0:
         return None
-    A = math.acos((8.0 - u1 * u1) / 8.0)
-    u = _mod2pi(A)
-    t = _mod2pi(math.atan2(-eta, xi) + 0.5 * A + _mod2pi(0.5 * _PI))
-    # fix standard formula
-    t = _mod2pi(theta + 0.5 * (_PI - A))
-    v = _mod2pi(t - phi - u)
+    A = math.acos((8.0 - u1 * u1) / 8.0)   # A = u (arc angle of middle R-)
+    u = A
+    t = _mod2pi(theta + _PI - 0.5 * A)      # 修正：θ + π − A/2（原代码 θ + π/2 − A/2 有误）
+    v = _mod2pi(phi - t - u)                 # 修正：phi − t − u（原代码符号反了）
     if t >= 0.0 and u >= 0.0 and v >= 0.0:
         return t, u, v
     return None
@@ -199,18 +209,26 @@ def _RmLpRm(x, y, phi):
 
 
 def _LpRmLm(x, y, phi):
-    """L+R-L-"""
+    """L+R-L-
+    t + u - v = phi（最后段 L- 减少 heading），端点方程与 L+R-L+ 相同。
+    v = t + u - phi（不做 mod2pi，直接取原始值）。
+    需要 v >= 0，即 t + u >= phi。
+    """
     xi = x - math.sin(phi)
     eta = y - 1.0 + math.cos(phi)
     u1, theta = _polar(xi, eta)
     if u1 > 4.0:
         return None
     A = math.acos((8.0 - u1 * u1) / 8.0)
-    t = _mod2pi(theta + 0.5 * (_PI - A))
-    u = _mod2pi(A)
-    v = _mod2pi(phi - t + u)
-    if t >= 0.0 and u >= 0.0 and v <= 0.0:
-        return t, u, -v
+    u = A
+    t = _mod2pi(theta + _PI - 0.5 * A)     # 与 _LpRmLp 相同的 t 计算
+    v = t + u - phi                          # 不使用 mod2pi，直接取差值
+    while v < 0.0:
+        v += _TWO_PI
+    while v >= _TWO_PI:
+        v -= _TWO_PI
+    if t >= 0.0 and u >= 0.0 and v >= 0.0:
+        return t, u, v
     return None
 
 
@@ -569,16 +587,22 @@ def _parse_tag(tag):
     return segments
 
 
-def rs_sample_path(x1, y1, th1, x2, y2, th2, turning_radius, step=0.05):
+def rs_sample_path(x1, y1, th1, x2, y2, th2, turning_radius, step=0.05,
+                   verbose=False):
     """
     对从 (x1,y1,th1) 到 (x2,y2,th2) 的最短 RS 路径按 step（米）密度采样。
 
-    返回: [(x, y, th), ...] 轨迹点列表（包含起点和终点）
+    返回: [(x, y, th), ...] 轨迹点列表（含起点和终点）
           若找不到 RS 路径则返回 None。
 
     坐标约定与 main.py 一致（前进方向为 -x）。
+
+    坐标变换流程（修正版）：
+      main.py 局部系 forward=-x  →  RS 标准系 forward=+x
+          x_rs = -lx,  y_rs = ly,  th_rs = -lth
+    先在 RS 标准系内用精确圆弧公式积分，再变换回世界系。
     """
-    # 变换到局部坐标系
+    # ── Step 1：world → main.py 局部系 ───────────────────────────
     dx = x2 - x1
     dy = y2 - y1
     cos_t = math.cos(th1)
@@ -591,13 +615,29 @@ def rs_sample_path(x1, y1, th1, x2, y2, th2, turning_radius, step=0.05):
     while lphi <= -_PI:
         lphi += _TWO_PI
 
-    segs = rs_best_path(lx, ly, lphi, turning_radius)
+    # ── Step 2：main.py 局部系 → RS 标准系（forward=+x）──────────
+    # 180° 旋转变换：x_rs = -lx, y_rs = -ly, th_rs = lphi
+    # 推导：main.py 局部系前进方向=(-1,0)，RS 标准系前进方向=(+1,0)
+    # 翻转 x 和 y 后：(-lx,-ly) → (+1,0) 对齐，转向方向也得以保持一致
+    x_rs_goal = -lx
+    y_rs_goal = -ly
+    th_rs_goal = lphi   # 旋转 180° 后角度不变（同向旋转）
+    while th_rs_goal > _PI:
+        th_rs_goal -= _TWO_PI
+    while th_rs_goal <= -_PI:
+        th_rs_goal += _TWO_PI
+
+    segs = rs_best_path(x_rs_goal, y_rs_goal, th_rs_goal, turning_radius)
     if not segs:
         return None
 
-    # 在局部坐标系下沿路径采样
+    # ── Step 3：在 RS 标准系内精确积分采样 ───────────────────────
+    # RS 标准系：forward = +x，L 弧 = th 增大，R 弧 = th 减小
+    # 精确圆弧公式（无直线近似累积误差）：
+    #   L 弧: new_x = x + r*(sin(th+dth)-sin(th)),  new_y = y + r*(cos(th)-cos(th+dth))
+    #   R 弧: new_x = x + r*(sin(th)-sin(th+dth)),  new_y = y + r*(cos(th+dth)-cos(th))
     cx, cy, cth = 0.0, 0.0, 0.0
-    local_pts = [(cx, cy, cth)]
+    rs_pts = [(cx, cy, cth)]
 
     for stype, length_m in segs:
         direction = 1 if length_m >= 0 else -1
@@ -608,36 +648,37 @@ def rs_sample_path(x1, y1, th1, x2, y2, th2, turning_radius, step=0.05):
             dist_left -= ds
 
             if stype == 'S':
-                # 直线段：沿当前朝向前进/后退
-                # main.py 约定：前进方向 = -x（即 x -= v*cos(th)）
-                cx -= direction * ds * math.cos(cth)
-                cy -= direction * ds * math.sin(cth)
+                # 直线：RS 标准系 forward=+x
+                cx += direction * ds * math.cos(cth)
+                cy += direction * ds * math.sin(cth)
             elif stype == 'L':
-                # 左转弧
-                arc = direction * ds / turning_radius
-                # 圆心在左侧：(cx - r*sin(th), cy + r*cos(th))（main.py 约定）
-                # 数值积分一小步（足够精确）
-                cx -= direction * ds * math.cos(cth)
-                cy -= direction * ds * math.sin(cth)
-                cth += arc
+                # 左转弧（th 增大方向为 CCW）
+                dth = direction * ds / turning_radius
+                new_cx = cx + turning_radius * (math.sin(cth + dth) - math.sin(cth))
+                new_cy = cy + turning_radius * (math.cos(cth) - math.cos(cth + dth))
+                cx, cy, cth = new_cx, new_cy, cth + dth
             else:
-                # 右转弧
-                arc = -direction * ds / turning_radius
-                cx -= direction * ds * math.cos(cth)
-                cy -= direction * ds * math.sin(cth)
-                cth += arc
+                # 右转弧（th 减小方向为 CW）
+                dth = -direction * ds / turning_radius
+                new_cx = cx + turning_radius * (math.sin(cth) - math.sin(cth + dth))
+                new_cy = cy + turning_radius * (math.cos(cth + dth) - math.cos(cth))
+                cx, cy, cth = new_cx, new_cy, cth + dth
 
-            # 角度包装
             while cth > _PI:
                 cth -= _TWO_PI
             while cth <= -_PI:
                 cth += _TWO_PI
 
-            local_pts.append((cx, cy, cth))
+            rs_pts.append((cx, cy, cth))
 
-    # 将局部坐标系点变换回世界坐标系
+    # ── Step 4：RS 标准系 → main.py 局部系 → 世界系 ─────────────
+    # 逆变换：lx_p = -x_rs, ly_p = -y_rs, lth_p = th_rs
     world_pts = []
-    for lx_p, ly_p, lth_p in local_pts:
+    for x_rs, y_rs, th_rs in rs_pts:
+        lx_p = -x_rs
+        ly_p = -y_rs
+        lth_p = th_rs
+        # 局部系 → 世界系（逆旋转 th1）
         wx = x1 + lx_p * cos_t - ly_p * sin_t
         wy = y1 + lx_p * sin_t + ly_p * cos_t
         wth = th1 + lth_p
@@ -647,4 +688,35 @@ def rs_sample_path(x1, y1, th1, x2, y2, th2, turning_radius, step=0.05):
             wth += _TWO_PI
         world_pts.append((wx, wy, wth))
 
+    # ── Step 5：日志（verbose 或有位置误差时输出）────────────────
+    if world_pts:
+        ep = world_pts[-1]
+        err_pos = math.hypot(ep[0] - x2, ep[1] - y2)
+        err_ang_deg = abs(math.degrees(_angle_diff(ep[2], th2)))
+        seg_str = ', '.join('{}{}{:.3f}m'.format(
+            s, '+' if l >= 0 else '-', abs(l)) for s, l in segs)
+        total_len = sum(abs(l) for _, l in segs)
+        if verbose or err_pos > 0.1:
+            import sys
+            print('[RS_SAMPLE] start=({:.3f},{:.3f},{:.2f}deg) '
+                  'goal=({:.3f},{:.3f},{:.2f}deg)'.format(
+                      x1, y1, math.degrees(th1),
+                      x2, y2, math.degrees(th2)), file=sys.stderr)
+            print('[RS_SAMPLE] segs=[{}] total={:.3f}m'.format(
+                  seg_str, total_len), file=sys.stderr)
+            print('[RS_SAMPLE] endpoint=({:.3f},{:.3f},{:.2f}deg) '
+                  'err_pos={:.4f}m err_ang={:.2f}deg'.format(
+                      ep[0], ep[1], math.degrees(ep[2]),
+                      err_pos, err_ang_deg), file=sys.stderr)
+
     return world_pts
+
+
+def _angle_diff(a, b):
+    """返回 a-b 的角度差，规范化到 (-π, π]"""
+    d = a - b
+    while d > _PI:
+        d -= _TWO_PI
+    while d <= -_PI:
+        d += _TWO_PI
+    return d

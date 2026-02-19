@@ -22,11 +22,12 @@ RS_GOAL_Y = 0.0
 RS_GOAL_TH = 0.0
 
 # RS 解析终点扩展：离目标的 RS 距离小于此值时，尝试直接用 RS 曲线一杆进洞
-RS_EXPANSION_RADIUS = 1.5  # meters
+# 设为 0.8m：足够触发终点附近的扩展，又不会在离目标很远时误触发
+RS_EXPANSION_RADIUS = 0.8  # meters
 
 # === 路径质量惩罚常量 ===
 # 换挡惩罚：前进→倒退 或 倒退→前进 时施加（相当于约 12 步）
-GEAR_CHANGE_PENALTY = 3.0  # seconds
+GEAR_CHANGE_PENALTY = 0.1  # seconds
 # 急打方向盘惩罚：单步转向比变化超过 0.5 时施加
 STEER_JUMP_PENALTY = 0.5   # seconds
 
@@ -150,35 +151,55 @@ def plan_path(x0, y0, theta0, precomp_prim,
             continue
 
         # ── RS 解析终点扩展（一杆进洞）──────────────────────────────
-        # 当前节点离目标足够近时，尝试用 RS 曲线直接连到终点，
-        # 绕过剩余的 A* 基元搜索，消除终点盲搜揉库问题。
+        # 当前节点 RS 距离 < RS_EXPANSION_RADIUS 时尝试直接连到终点。
+        # 验收条件：路径无碰撞 AND 终点真正落入 A* 目标区。
         rs_dist_to_goal = rs.rs_distance_pose(
             cx, cy, cth,
             RS_GOAL_X, RS_GOAL_Y, RS_GOAL_TH,
             MIN_TURN_RADIUS
         )
         if rs_dist_to_goal < RS_EXPANSION_RADIUS:
+            import sys as _sys
+            print('[RS_EXPAND] node=({:.3f},{:.3f},{:.2f}deg) '
+                  'rs_dist={:.3f}m < {:.1f}m → try'.format(
+                      cx, cy, math.degrees(cth),
+                      rs_dist_to_goal, RS_EXPANSION_RADIUS),
+                  file=_sys.stderr)
             rs_traj = rs.rs_sample_path(
                 cx, cy, cth,
                 RS_GOAL_X, RS_GOAL_Y, RS_GOAL_TH,
                 MIN_TURN_RADIUS, step=DT * 0.5
             )
-            if rs_traj and _check_traj_collision(rs_traj, no_corridor):
-                # RS 曲线无碰撞，直接拼接到已有路径后返回
-                # 重构动作链
-                final_path = []
-                curr = path_node
-                while curr is not None:
-                    final_path.append(curr[1])
-                    curr = curr[0]
-                final_path.reverse()
-                if stats is not None:
-                    stats['expanded'] = expanded
-                    stats['elapsed_ms'] = round((time.perf_counter() - t_start) * 1000.0, 1)
-                    stats['use_rs'] = use_rs
-                    stats['no_corridor'] = no_corridor
-                    stats['rs_expansion'] = True
-                return True, final_path, rs_traj
+            if rs_traj:
+                ex, ey, eth = rs_traj[-1]
+                goal_reached = (ex <= 2.25
+                                and abs(ey) <= 0.18
+                                and abs(eth) <= ALIGN_GOAL_DYAW)
+                collision_ok = _check_traj_collision(rs_traj, no_corridor)
+                print('[RS_EXPAND] endpoint=({:.3f},{:.3f},{:.2f}deg) '
+                      'goal_ok={} collision_ok={}'.format(
+                          ex, ey, math.degrees(eth),
+                          goal_reached, collision_ok),
+                      file=_sys.stderr)
+                if goal_reached and collision_ok:
+                    # 真正到达目标区且无碰撞，重构动作链
+                    final_path = []
+                    curr = path_node
+                    while curr is not None:
+                        final_path.append(curr[1])
+                        curr = curr[0]
+                    final_path.reverse()
+                    if stats is not None:
+                        stats['expanded'] = expanded
+                        stats['elapsed_ms'] = round(
+                            (time.perf_counter() - t_start) * 1000.0, 1)
+                        stats['use_rs'] = use_rs
+                        stats['no_corridor'] = no_corridor
+                        stats['rs_expansion'] = True
+                    return True, final_path, rs_traj
+            else:
+                import sys as _sys
+                print('[RS_EXPAND] rs_sample_path returned None', file=_sys.stderr)
         # ────────────────────────────────────────────────────────────
 
         # Primitive 数量上限硬约束
@@ -249,19 +270,13 @@ def plan_path(x0, y0, theta0, precomp_prim,
                 return True, final_path, None
                 
             # 计算 Cost 计分
+            # 注意：状态键仅含 (x, y, θ)，代价函数不可依赖 prev_s / prev_gear，
+            # 否则 A* 因状态不完整而无法找到需要 K-turn 的路径（状态关闭提前）。
+            # GEAR_CHANGE_PENALTY / STEER_JUMP_PENALTY 由 B-spline 后处理平滑承担。
             step_time = N * DT
             step_cost = step_time
             if act[0] == 'R':
                 step_cost += 1.5 * step_time
-            if path_len > 0:
-                diff = act[1] - prev_s
-                step_cost += 0.3 * (diff if diff >= 0 else -diff)
-                # 换挡惩罚：前进↔倒退切换（根治 zig-zag 抽搐）
-                if act[0] != prev_gear and prev_gear != 'N':
-                    step_cost += GEAR_CHANGE_PENALTY
-                # 急打方向盘惩罚：单步转向比变化 > 0.5
-                if (diff if diff >= 0 else -diff) > 0.5:
-                    step_cost += STEER_JUMP_PENALTY
                 
             new_cost = cost + step_cost
             
