@@ -128,7 +128,7 @@ class App:
         # Heuristic / obstacle mode flags
         self.use_rs = False       # Tab  to toggle: Geometric / RS heuristic
         self.no_corridor = False  # C    to toggle: Corridor / No-Corridor
-        self.use_smooth = False   # P    to toggle: show smoothed path
+        self.use_smooth = True    # P    to toggle: show smoothed path（默认开启 B 样条平滑）
 
         # Last planning stats
         self.last_stats = {}
