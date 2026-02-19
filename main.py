@@ -22,14 +22,28 @@ RS_GOAL_Y = 0.0
 RS_GOAL_TH = 0.0
 
 # RS 解析终点扩展：离目标的 RS 距离小于此值时，尝试直接用 RS 曲线一杆进洞
-# 设为 0.8m：足够触发终点附近的扩展，又不会在离目标很远时误触发
 RS_EXPANSION_RADIUS = 0.8  # meters
 
 # === 路径质量惩罚常量 ===
-# 换挡惩罚：前进→倒退 或 倒退→前进 时施加（相当于约 12 步）
 GEAR_CHANGE_PENALTY = 0.1  # seconds
-# 急打方向盘惩罚：单步转向比变化超过 0.5 时施加
-STEER_JUMP_PENALTY = 0.5   # seconds
+STEER_JUMP_PENALTY  = 0.5  # seconds
+
+# === 两阶段规划参数 ===
+# 第一阶段宽松目标：完成 K-turn 返程后离墙有余量（x≥2.2），Stage-2 才容易求解
+PREAPPROACH_X_MIN  = 2.2   # 确保离墙足够远，Stage-2 启发函数不会过估计
+PREAPPROACH_X_MAX  = 3.0   # 工作区右边界
+PREAPPROACH_Y_MAX  = 0.5   # 横向偏移 ≤ 0.5m
+PREAPPROACH_TH_MAX = 0.8   # 朝向偏差 ≤ ±46°
+
+# |y| 或 |θ| 超过此阈值时自动启用两阶段规划
+TWO_STAGE_Y_THRESH  = 0.8  # m
+TWO_STAGE_TH_THRESH = 0.7  # rad ≈ 40°
+
+# Python A* 可规划的最大横向偏移（超出后直接返回 IMPOSSIBLE+说明）
+# 原因：|y| > 0.8m 时需要多次 K-turn，Python A* 需要 20s+ 才能求解或直接失败。
+# 说明：本规划器仅设计用于"最终对准"阶段（final approach）。
+#       全局仓库导航（|y| 大偏移）应由 Isaac Lab 或 ROS Nav2 处理。
+MAX_PLANNABLE_Y = 0.8  # m（与 TWO_STAGE_Y_THRESH 保持一致）
 
 def init_primitives():
     """前向积分预推演 30 种运动基元，并将相对坐标增量与相对角度的正余弦值进行缓存"""
@@ -98,25 +112,28 @@ def _check_traj_collision(traj, no_corridor=False):
 
 
 def plan_path(x0, y0, theta0, precomp_prim,
-              use_rs=False, stats=None, no_corridor=False):
+              use_rs=False, stats=None, no_corridor=False,
+              # 可选目标区覆写（供两阶段规划第一阶段使用）
+              _goal_xmin=1.92, _goal_xmax=2.25,
+              _goal_yhalf=0.18, _goal_thmax=ALIGN_GOAL_DYAW,
+              _step_limit=1079, _expand_limit=150000, _prim_limit=30,
+              _rs_expand=True,
+              # Stage-1 专用简单启发函数（仅惩罚横向偏移）
+              _heuristic_preapproach=False):
     """
     执行 A* 搜索
 
     参数:
-        use_rs      : 若为 True，使用 Reeds-Shepp 距离作为启发函数；
-                      否则使用原有手工几何启发函数
-        stats       : 可选字典，若传入则填充以下字段（调用方零改动）:
-                        stats['expanded']    - 扩展节点总数
-                        stats['elapsed_ms']  - 规划耗时（毫秒）
-                        stats['use_rs']      - 使用的启发函数类型
-                        stats['no_corridor'] - 是否关闭走廊约束
-        no_corridor : 若为 True，跳过安全走廊碰撞检测，仅保留硬墙边界；
-                      用于在接近无障碍环境下验证 RS 启发函数
+        use_rs       : 若为 True，使用 Reeds-Shepp 距离作为启发函数
+        stats        : 可选字典，填充 expanded / elapsed_ms / use_rs / no_corridor 等
+        no_corridor  : 若为 True，跳过走廊约束，仅保留硬墙边界
+        _goal_x*/_goal_y*/_goal_th* : 目标区参数（两阶段规划 Stage-1 时覆写）
+        _step_limit  : 最大 DT 步数（默认 1079）
+        _expand_limit: 最大扩展节点数（默认 150000）
+        _prim_limit  : 最大基元深度（默认 30）
+        _rs_expand   : 是否尝试 RS 解析扩展（Stage-1 时关闭）
 
     返回: (success, actions, rs_traj)
-        success  : True/False
-        actions  : 动作列表 if success, else None
-        rs_traj  : RS 解析扩展轨迹点列表 [(x,y,th),...] if RS 扩展成功, else None
     """
     t_start = time.perf_counter()
     visited = {}
@@ -150,64 +167,63 @@ def plan_path(x0, y0, theta0, precomp_prim,
         if visited.get(ckey, float('inf')) < cost - 1e-5:
             continue
 
-        # ── RS 解析终点扩展（一杆进洞）──────────────────────────────
-        # 当前节点 RS 距离 < RS_EXPANSION_RADIUS 时尝试直接连到终点。
-        # 验收条件：路径无碰撞 AND 终点真正落入 A* 目标区。
-        rs_dist_to_goal = rs.rs_distance_pose(
-            cx, cy, cth,
-            RS_GOAL_X, RS_GOAL_Y, RS_GOAL_TH,
-            MIN_TURN_RADIUS
-        )
-        if rs_dist_to_goal < RS_EXPANSION_RADIUS:
-            import sys as _sys
-            print('[RS_EXPAND] node=({:.3f},{:.3f},{:.2f}deg) '
-                  'rs_dist={:.3f}m < {:.1f}m → try'.format(
-                      cx, cy, math.degrees(cth),
-                      rs_dist_to_goal, RS_EXPANSION_RADIUS),
-                  file=_sys.stderr)
-            rs_traj = rs.rs_sample_path(
+        # ── RS 解析终点扩展（一杆进洞）──────────────────────────────────
+        # Stage-1 宽松目标时禁用（_rs_expand=False），避免误触发
+        if _rs_expand:
+            rs_dist_to_goal = rs.rs_distance_pose(
                 cx, cy, cth,
                 RS_GOAL_X, RS_GOAL_Y, RS_GOAL_TH,
-                MIN_TURN_RADIUS, step=DT * 0.5
+                MIN_TURN_RADIUS
             )
-            if rs_traj:
-                ex, ey, eth = rs_traj[-1]
-                goal_reached = (ex <= 2.25
-                                and abs(ey) <= 0.18
-                                and abs(eth) <= ALIGN_GOAL_DYAW)
-                collision_ok = _check_traj_collision(rs_traj, no_corridor)
-                print('[RS_EXPAND] endpoint=({:.3f},{:.3f},{:.2f}deg) '
-                      'goal_ok={} collision_ok={}'.format(
-                          ex, ey, math.degrees(eth),
-                          goal_reached, collision_ok),
-                      file=_sys.stderr)
-                if goal_reached and collision_ok:
-                    # 真正到达目标区且无碰撞，重构动作链
-                    final_path = []
-                    curr = path_node
-                    while curr is not None:
-                        final_path.append(curr[1])
-                        curr = curr[0]
-                    final_path.reverse()
-                    if stats is not None:
-                        stats['expanded'] = expanded
-                        stats['elapsed_ms'] = round(
-                            (time.perf_counter() - t_start) * 1000.0, 1)
-                        stats['use_rs'] = use_rs
-                        stats['no_corridor'] = no_corridor
-                        stats['rs_expansion'] = True
-                    return True, final_path, rs_traj
-            else:
+            if rs_dist_to_goal < RS_EXPANSION_RADIUS:
                 import sys as _sys
-                print('[RS_EXPAND] rs_sample_path returned None', file=_sys.stderr)
+                print('[RS_EXPAND] node=({:.3f},{:.3f},{:.2f}deg) '
+                      'rs_dist={:.3f}m < {:.1f}m → try'.format(
+                          cx, cy, math.degrees(cth),
+                          rs_dist_to_goal, RS_EXPANSION_RADIUS),
+                      file=_sys.stderr)
+                rs_traj = rs.rs_sample_path(
+                    cx, cy, cth,
+                    RS_GOAL_X, RS_GOAL_Y, RS_GOAL_TH,
+                    MIN_TURN_RADIUS, step=DT * 0.5
+                )
+                if rs_traj:
+                    ex, ey, eth = rs_traj[-1]
+                    goal_reached = (ex <= 2.25
+                                    and abs(ey) <= 0.18
+                                    and abs(eth) <= ALIGN_GOAL_DYAW)
+                    collision_ok = _check_traj_collision(rs_traj, no_corridor)
+                    print('[RS_EXPAND] endpoint=({:.3f},{:.3f},{:.2f}deg) '
+                          'goal_ok={} collision_ok={}'.format(
+                              ex, ey, math.degrees(eth),
+                              goal_reached, collision_ok),
+                          file=_sys.stderr)
+                    if goal_reached and collision_ok:
+                        final_path = []
+                        curr = path_node
+                        while curr is not None:
+                            final_path.append(curr[1])
+                            curr = curr[0]
+                        final_path.reverse()
+                        if stats is not None:
+                            stats['expanded'] = expanded
+                            stats['elapsed_ms'] = round(
+                                (time.perf_counter() - t_start) * 1000.0, 1)
+                            stats['use_rs'] = use_rs
+                            stats['no_corridor'] = no_corridor
+                            stats['rs_expansion'] = True
+                        return True, final_path, rs_traj
+                else:
+                    import sys as _sys
+                    print('[RS_EXPAND] rs_sample_path returned None', file=_sys.stderr)
         # ────────────────────────────────────────────────────────────
 
         # Primitive 数量上限硬约束
-        if path_len >= 30:
+        if path_len >= _prim_limit:
             continue
-            
+
         expanded += 1
-        if expanded > 150000: # 触碰极限深度截断兜底
+        if expanded > _expand_limit:
             break
             
         cos_th = math.cos(cth)
@@ -240,8 +256,8 @@ def plan_path(x0, y0, theta0, precomp_prim,
                     ok = False
                     break
                         
-                # 3. 对齐命中终止判别 (Handover Region)
-                if nx <= 2.25 and -0.18 <= ny <= 0.18 and -ALIGN_GOAL_DYAW <= nth <= ALIGN_GOAL_DYAW:
+                # 3. 对齐命中终止判别 (Handover Region / pre-approach zone)
+                if _goal_xmin <= nx <= _goal_xmax and abs(ny) <= _goal_yhalf and abs(nth) <= _goal_thmax:
                     hit_goal = True
                     step_hit = i + 1
                     break
@@ -250,7 +266,7 @@ def plan_path(x0, y0, theta0, precomp_prim,
                 continue
                 
             new_steps = steps + (step_hit if hit_goal else N)
-            if new_steps > 1079: # 超过执行步数限额 1079
+            if new_steps > _step_limit:
                 continue
                 
             # 命中目标: 触发重构链回溯
@@ -267,6 +283,9 @@ def plan_path(x0, y0, theta0, precomp_prim,
                     stats['use_rs'] = use_rs
                     stats['no_corridor'] = no_corridor
                     stats['rs_expansion'] = False
+                    # 记录 A* 实际命中目标时的位姿（mid-primitive 截断点）
+                    # 供两阶段规划的 Stage-2 使用，避免 primitive 末端越界问题
+                    stats['goal_pos'] = (nx, ny, nth)
                 return True, final_path, None
                 
             # 计算 Cost 计分
@@ -291,15 +310,23 @@ def plan_path(x0, y0, theta0, precomp_prim,
                 visited[nkey] = new_cost
                 
                 # ==== Heuristic ====
-                if use_rs:
+                if _heuristic_preapproach:
+                    # Stage-1 专用启发：同时惩罚横向偏移和 x 越出目标区
+                    # x < _goal_xmin 说明需要倒退（完成 K-turn 返程），额外惩罚
+                    abs_ny = ny if ny >= 0 else -ny
+                    h_y = max(0.0, abs_ny - _goal_yhalf) * 5.0
+                    h_x = max(0.0, _goal_xmin - nx) * 3.0  # 鼓励从墙边退回
+                    h = h_y + h_x
+                    h_weight = 1.0
+                elif use_rs:
                     # RS 距离（米）除以最大速度（0.25 m/s）换算为时间下界（秒）
-                    # 使得启发值与 A* 代价量纲一致，保证可容许性
                     rs_dist = rs.rs_distance_pose(
                         nx, ny, nth,
                         RS_GOAL_X, RS_GOAL_Y, RS_GOAL_TH,
                         MIN_TURN_RADIUS
                     )
                     h = rs_dist / 0.25  # max forward speed = 0.25 m/s
+                    h_weight = 1.0
                 else:
                     # 原有手工几何启发式（保留用于对比）
                     dx_h = nx - 2.25 if nx > 2.25 else 0.0
@@ -314,14 +341,13 @@ def plan_path(x0, y0, theta0, precomp_prim,
 
                     back_up_penalty = 0.0
                     if nx < room_needed and (dy_h > 0.05 or dth_h > 0.05):
-                        back_up_penalty = (room_needed - nx) * 8.0
+                        # 系数从 8.0 降为 2.0，并 cap 到 2.0s，
+                        # 防止贴墙起点（x≈1.92）被大幅过估而导致 A* 失败
+                        back_up_penalty = min((room_needed - nx) * 2.0, 2.0)
 
                     h = dx_h * 4.0 + dy_h * 8.0 + dth_h * 4.0 + back_up_penalty
+                    h_weight = 1.2  # 降低权重，减少过估计风险
                 # ===================
-                
-                # RS 启发已是真实代价单位，权重 1.0 保证可容许性
-                # 几何启发是经验值，原作者调参为 1.5 倍加权
-                h_weight = 1.0 if use_rs else 1.5
                 tiebreaker += 1
                 heapq.heappush(q, (
                     new_cost + h * h_weight,
@@ -343,6 +369,181 @@ def plan_path(x0, y0, theta0, precomp_prim,
         stats['rs_expansion'] = False
 
     return False, None, None
+
+def _replay_to_end(x0, y0, theta0, acts, precomp_prim):
+    """用动作序列计算最终位姿（取每段 primitive 的最后一步）"""
+    cx, cy, cth = x0, y0, theta0
+    pmap = {p[0]: p[2] for p in precomp_prim}
+    for act in (acts or []):
+        seg = pmap.get(act)
+        if seg is None:
+            continue
+        cos_t, sin_t = math.cos(cth), math.sin(cth)
+        ddx, ddy, ddth = seg[-1][0], seg[-1][1], seg[-1][2]
+        nx = cx + ddx * cos_t - ddy * sin_t
+        ny = cy + ddx * sin_t + ddy * cos_t
+        nth = cth + ddth
+        if nth > M_PI:  nth -= PI2
+        elif nth <= -M_PI: nth += PI2
+        cx, cy, cth = nx, ny, nth
+    return cx, cy, cth
+
+
+def _k_turn_preposition(x0, y0, theta0, precomp_prim, no_corridor=False):
+    """
+    确定性 K-turn 预定位：通过贪心选择基元减少横向偏移 |y|。
+    不依赖 A*，总是在毫秒内完成。
+
+    策略：每一步从所有基元中选择"使 |y| 减小最多"的那个，
+    直到 |y| ≤ PREAPPROACH_Y_MAX 且 x ≥ PREAPPROACH_X_MIN。
+
+    返回: (ok, actions, final_x, final_y, final_theta)
+    """
+    cx, cy, cth = x0, y0, theta0
+    acts = []
+    pmap = {p[0]: p[2] for p in precomp_prim}
+    MAX_ITERS = 80   # 最多 80 个基元（约 26s 运行时间）
+
+    for _ in range(MAX_ITERS):
+        # 检查是否已满足预接近区条件
+        if (abs(cy) <= PREAPPROACH_Y_MAX
+                and PREAPPROACH_X_MIN <= cx <= PREAPPROACH_X_MAX
+                and abs(cth) <= PREAPPROACH_TH_MAX):
+            return True, acts, cx, cy, cth
+
+        best_act = None
+        best_score = float('inf')
+
+        for act, N, traj in precomp_prim:
+            cos_t, sin_t = math.cos(cth), math.sin(cth)
+            ok = True
+            for dx, dy, dth, cdth, sdth in traj:
+                nx = cx + dx * cos_t - dy * sin_t
+                ny = cy + dx * sin_t + dy * cos_t
+                nth = cth + dth
+                if nth > M_PI:  nth -= PI2
+                elif nth <= -M_PI: nth += PI2
+                sin_nth = sin_t * cdth + cos_t * sdth
+                valid, _ = check_collision(nx, ny, nth, sin_nth, no_corridor=no_corridor)
+                if not valid:
+                    ok = False
+                    break
+            if not ok:
+                continue
+
+            # 评分：以最终 |y| + 偏离预接近区 x 范围的惩罚 为贪心目标
+            ddx, ddy, ddth = traj[-1][0], traj[-1][1], traj[-1][2]
+            ex = cx + ddx * cos_t - ddy * sin_t
+            ey = cy + ddx * sin_t + ddy * cos_t
+            eth = cth + ddth
+            x_penalty = max(0.0, PREAPPROACH_X_MIN - ex) * 2.0
+            score = abs(ey) + x_penalty
+
+            if score < best_score:
+                best_score = score
+                best_act = act
+
+        if best_act is None:
+            break   # 所有基元都碰墙，停止
+
+        # 应用最佳基元
+        seg = pmap[best_act]
+        cos_t, sin_t = math.cos(cth), math.sin(cth)
+        ddx, ddy, ddth = seg[-1][0], seg[-1][1], seg[-1][2]
+        cx = cx + ddx * cos_t - ddy * sin_t
+        cy = cy + ddx * sin_t + ddy * cos_t
+        cth = cth + ddth
+        if cth > M_PI:  cth -= PI2
+        elif cth <= -M_PI: cth += PI2
+        acts.append(best_act)
+
+    # 最后检查一次目标条件（可能已满足但退出循环了）
+    if (abs(cy) <= PREAPPROACH_Y_MAX
+            and PREAPPROACH_X_MIN <= cx <= PREAPPROACH_X_MAX
+            and abs(cth) <= PREAPPROACH_TH_MAX):
+        return True, acts, cx, cy, cth
+
+    return False, acts, cx, cy, cth
+
+
+def plan_path_robust(x0, y0, theta0, precomp_prim,
+                     use_rs=False, stats=None, no_corridor=False):
+    """
+    鲁棒两阶段规划器：自动处理大侧偏 / 大偏航起点。
+
+    逻辑：
+      • 若 |y0| ≤ TWO_STAGE_Y_THRESH 且 |θ0| ≤ TWO_STAGE_TH_THRESH
+        → 直接调用 plan_path（单阶段，与原来行为完全相同）
+      • 否则启动两阶段：
+          Stage-1  确定性 K-turn 预定位（贪心选择基元，毫秒级完成）
+          Stage-2  从 Stage-1 终点用标准 plan_path 精准对准托盘
+
+    返回: (success, actions, rs_traj)   — 与 plan_path 接口完全一致
+    """
+    t_robust = time.perf_counter()
+
+    # 超出 Python A* 可处理范围：立即返回（避免 20s+ 阻塞）
+    if abs(y0) > MAX_PLANNABLE_Y:
+        if stats is not None:
+            stats['expanded'] = 0
+            stats['elapsed_ms'] = 0.0
+            stats['two_stage'] = False
+            stats['out_of_range'] = True
+        return False, None, None
+
+    needs_two_stage = (abs(y0) > TWO_STAGE_Y_THRESH
+                       or abs(theta0) > TWO_STAGE_TH_THRESH)
+
+    if not needs_two_stage:
+        return plan_path(x0, y0, theta0, precomp_prim,
+                         use_rs=use_rs, stats=stats,
+                         no_corridor=no_corridor)
+
+    # ── Stage-1：确定性贪心 K-turn 预定位 ────────────────────────────
+    import time as _time
+    t1 = _time.perf_counter()
+    ok1, acts1, mx, my, mth = _k_turn_preposition(
+        x0, y0, theta0, precomp_prim, no_corridor=no_corridor)
+    t1_ms = round((_time.perf_counter() - t1) * 1000.0, 1)
+
+    if not ok1:
+        # Stage-1 失败（大偏航角时触发，理论上极少）→ 回退单阶段
+        # 注意：大 y 情况已在前面被 MAX_PLANNABLE_Y 截断，不会走到这里
+        return plan_path(x0, y0, theta0, precomp_prim,
+                         use_rs=use_rs, stats=stats,
+                         no_corridor=no_corridor)
+
+    # ── Stage-2：精准对准托盘 ────────────────────────────────────────
+    st2 = {}
+    ok2, acts2, rs_traj = plan_path(
+        mx, my, mth, precomp_prim,
+        use_rs=use_rs,
+        stats=st2,
+        no_corridor=no_corridor,
+    )
+
+    total_ms = round((time.perf_counter() - t_robust) * 1000.0, 1)
+
+    if ok2:
+        if stats is not None:
+            stats['expanded']    = st2.get('expanded', 0)
+            stats['elapsed_ms']  = total_ms
+            stats['use_rs']      = use_rs
+            stats['no_corridor'] = no_corridor
+            stats['rs_expansion'] = st2.get('rs_expansion', False)
+            stats['two_stage']   = True
+            stats['stage1_acts'] = len(acts1 or [])
+            stats['stage2_acts'] = len(acts2 or [])
+            stats['stage1_ms']   = t1_ms
+            stats['stage2_ms']   = st2.get('elapsed_ms', 0)
+            stats['stage1_end']  = (mx, my, mth)
+        return True, (acts1 or []) + (acts2 or []), rs_traj
+
+    # Stage-2 失败 → 直接单阶段兜底
+    return plan_path(x0, y0, theta0, precomp_prim,
+                     use_rs=use_rs, stats=stats,
+                     no_corridor=no_corridor)
+
 
 def simulate_path(x0, y0, theta0, actions, precomp_prim):
     """

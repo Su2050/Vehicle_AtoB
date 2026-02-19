@@ -118,6 +118,7 @@ class App:
         self.path = []          # raw discrete trajectory
         self.smooth_path = []   # B-spline smoothed trajectory
         self.rs_traj = []       # RS analytic expansion segment (tail of path)
+        self.stage_split_idx = None  # index in self.path where Stage-2 starts
         self.planning = False
         self.animating = False
         self.anim_i = 0
@@ -252,7 +253,7 @@ class App:
         pygame.display.flip()
 
         st = {}
-        ok, acts, rs_traj = main.plan_path(
+        ok, acts, rs_traj = main.plan_path_robust(
             self.sx, self.sy, self.sth, self.prims,
             use_rs=self.use_rs,
             no_corridor=self.no_corridor,
@@ -262,9 +263,17 @@ class App:
         self.last_stats = st
 
         if not ok:
-            self.msg = "IMPOSSIBLE"
+            if st.get('out_of_range'):
+                self.msg = ("IMPOSSIBLE  |y|={:.2f}m 超出 {:.1f}m 上限  "
+                            "请手动将叉车移近中线再规划").format(
+                    abs(self.sy), main.MAX_PLANNABLE_Y)
+            else:
+                self.msg = "IMPOSSIBLE  规划失败（|y|={:.2f}m, |θ|={:.1f}°）".format(
+                    abs(self.sy), abs(math.degrees(self.sth)))
             self.msg_color = (200, 50, 50)
             return
+
+        self.stage_split_idx = None
 
         # ── 重建 A* 基元段轨迹 ──────────────────────────────────────
         traj = [(self.sx, self.sy, self.sth)]
@@ -285,10 +294,19 @@ class App:
                 traj.append((nx, ny, nth))
             cx, cy, cth = traj[-1]
 
+        # ── 如果是两阶段规划，记录 Stage-1/2 分割点 ──────────────
+        if st.get('two_stage') and acts:
+            # 找出两阶段总 act 数中 stage-1 的长度
+            stage1_len = st.get('stage1_acts', 0)
+            if stage1_len > 0:
+                # 计算 Stage-1 覆盖的轨迹点数
+                pts_per_act = len(traj) // len(acts)
+                self.stage_split_idx = stage1_len * pts_per_act
+
         # ── 拼接 RS 解析扩展尾段 ────────────────────────────────────
         self.rs_traj = rs_traj or []
         if self.rs_traj:
-            traj.extend(self.rs_traj[1:])  # 首点已在 traj 末尾
+            traj.extend(self.rs_traj[1:])
 
         self.path = traj
 
@@ -301,10 +319,13 @@ class App:
         self.anim_i = 0
         self.animating = True
 
-        rs_tag = "  [RS Expand]" if self.rs_traj else ""
+        tags = []
+        if self.rs_traj:      tags.append("RS Expand")
+        if st.get('two_stage'): tags.append("2-Stage")
+        tag_str = "  [{}]".format(", ".join(tags)) if tags else ""
         n_steps = len(acts) if acts else 0
-        self.msg = "Found: {} steps  |  {} expanded  |  {}ms{}".format(
-            n_steps, st.get('expanded', '?'), st.get('elapsed_ms', '?'), rs_tag)
+        self.msg = "Found: {} acts  |  {} expanded  |  {}ms{}".format(
+            n_steps, st.get('expanded', '?'), st.get('elapsed_ms', '?'), tag_str)
         self.msg_color = (0, 150, 50)
 
     def _reset(self):
@@ -314,6 +335,7 @@ class App:
         self.path = []
         self.smooth_path = []
         self.rs_traj = []
+        self.stage_split_idx = None
         self.anim_i = 0
         self.last_stats = {}
         self.sx, self.sy, self.sth = 2.8, 0.0, 0.0
@@ -330,6 +352,8 @@ class App:
         self._draw_goal()
         self._draw_pallet()
         self._draw_labels()
+
+        self._draw_plannable_zone()
 
         if len(self.path) > 1:
             self._draw_path()
@@ -442,6 +466,27 @@ class App:
             pygame.draw.polygon(overlay, COL_CORRIDOR, poly)
         self.screen.blit(overlay, (0, 0))
 
+    def _draw_plannable_zone(self):
+        """绘制可规划范围的横向边界（±MAX_PLANNABLE_Y 虚线）"""
+        t = self.trans
+        limit = main.MAX_PLANNABLE_Y
+        for sign, label_txt in [(+1, f"+{limit:.1f}m"), (-1, f"-{limit:.1f}m")]:
+            y_world = sign * limit
+            p1 = t.w2s(VIEW_X_MIN, y_world)
+            p2 = t.w2s(VIEW_X_MAX, y_world)
+            # 虚线：每 8 像素画 5 像素
+            dash, gap = 6, 4
+            x = p1[0]
+            col = (220, 100, 100, 140)
+            while x < p2[0]:
+                x1 = int(x)
+                x2 = min(int(x + dash), p2[0])
+                pygame.draw.line(self.screen, (220, 100, 100), (x1, p1[1]), (x2, p1[1]), 1)
+                x += dash + gap
+            # 标签
+            lbl = self.font.render(f"limit {label_txt}", True, (200, 80, 80))
+            self.screen.blit(lbl, (p2[0] - lbl.get_width() - 4, p1[1] - 14))
+
     def _draw_goal(self):
         t = self.trans
         overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
@@ -504,6 +549,15 @@ class App:
         # ── 始终绘制原始路径（细蓝色）──────────────────────────────
         raw_pts = [tr.w2s(p[0], p[1]) for p in self.path]
         pygame.draw.lines(self.screen, COL_PATH_RAW, False, raw_pts, 1)
+
+        # ── 两阶段分界点标记（黄色圆圈）────────────────────────────
+        if (self.stage_split_idx is not None
+                and 0 < self.stage_split_idx < len(self.path)):
+            mp = self.path[self.stage_split_idx]
+            msx, msy = tr.w2s(mp[0], mp[1])
+            pygame.draw.circle(self.screen, (240, 200, 0), (msx, msy), 7, 2)
+            lbl = self.font.render("S2", True, (200, 160, 0))
+            self.screen.blit(lbl, (msx + 8, msy - 8))
 
         # ── RS 解析扩展尾段（紫色标注）─────────────────────────────
         if self.rs_traj and len(self.rs_traj) > 1:
@@ -627,7 +681,9 @@ class App:
         cx_badge = badge(smooth_label, smooth_col, cx_badge, bar_y + 8)
 
         if self.rs_traj:
-            badge("RS Expand", (140, 60, 200), cx_badge, bar_y + 8)
+            cx_badge = badge("RS Expand", (140, 60, 200), cx_badge, bar_y + 8)
+        if self.last_stats.get('two_stage'):
+            badge("2-Stage", (30, 150, 130), cx_badge, bar_y + 8)
 
         # Last stats row
         if self.last_stats:
