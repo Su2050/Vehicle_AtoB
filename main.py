@@ -1,6 +1,8 @@
 import sys
 import math
 import heapq
+import time
+import rs
 
 # === 物理与环境常量 ===
 DT = 1.0 / 30.0
@@ -9,6 +11,15 @@ MAX_STEER = 0.65
 M_PI = math.pi
 PI2 = 2.0 * math.pi
 ALIGN_GOAL_DYAW = 5.0 * M_PI / 180.0
+
+# === RS 启发函数常量 ===
+# 最小转弯半径：由轴距和最大舵角决定
+MIN_TURN_RADIUS = WHEELBASE / math.tan(MAX_STEER)  # ≈ 1.97m
+
+# RS 目标位姿中心点（th=0 表示车头朝 -x 方向，即正对托盘）
+RS_GOAL_X = 2.10
+RS_GOAL_Y = 0.0
+RS_GOAL_TH = 0.0
 
 def init_primitives():
     """前向积分预推演 30 种运动基元，并将相对坐标增量与相对角度的正余弦值进行缓存"""
@@ -43,34 +54,51 @@ def init_primitives():
                 
     return precomp_prim
 
-def check_collision(nx, ny, nth, sin_nth=None):
+def check_collision(nx, ny, nth, sin_nth=None, no_corridor=False):
     """
     检查状态是否合法
     返回: (is_valid, reason)
     reason: 'OK', 'WALL', 'CORRIDOR'
+
+    no_corridor=True 时跳过安全走廊约束，仅保留硬墙边界，
+    用于在接近无障碍环境下验证 RS 启发函数效果。
     """
     # 1. 越界 & hard_wall 硬墙阻挡监控 (1.92 内阻断了出界 < 0)
     if nx > 3.0 or nx < 1.92 or ny > 3.0 or ny < -3.0:
         return False, 'WALL'
-        
-    # 2. 安全走廊门控 (safe_corridor)
-    if nx <= 2.05:
+
+    # 2. 安全走廊门控 (safe_corridor) —— 可选关闭
+    if not no_corridor and nx <= 2.05:
         if sin_nth is None:
             sin_nth = math.sin(nth)
         tip_lat = ny - 1.87 * sin_nth
         sc = (0.15 + (nx - 1.87) * 0.8) if nx > 1.87 else 0.15
         if tip_lat > sc or tip_lat < -sc:
             return False, 'CORRIDOR'
-            
+
     return True, 'OK'
 
-def plan_path(x0, y0, theta0, precomp_prim):
+def plan_path(x0, y0, theta0, precomp_prim,
+              use_rs=False, stats=None, no_corridor=False):
     """
     执行 A* 搜索
+
+    参数:
+        use_rs      : 若为 True，使用 Reeds-Shepp 距离作为启发函数；
+                      否则使用原有手工几何启发函数
+        stats       : 可选字典，若传入则填充以下字段（调用方零改动）:
+                        stats['expanded']    - 扩展节点总数
+                        stats['elapsed_ms']  - 规划耗时（毫秒）
+                        stats['use_rs']      - 使用的启发函数类型
+                        stats['no_corridor'] - 是否关闭走廊约束
+        no_corridor : 若为 True，跳过安全走廊碰撞检测，仅保留硬墙边界；
+                      用于在接近无障碍环境下验证 RS 启发函数
+
     返回: (success, result)
-    success: True/False
-    result: actions list if success, else None
+        success: True/False
+        result : actions list if success, else None
     """
+    t_start = time.perf_counter()
     visited = {}
     
     # 将浮点转为正整数键用于极速哈希去重
@@ -133,7 +161,8 @@ def plan_path(x0, y0, theta0, precomp_prim):
                 # sin(nth) = sin(th + dth) = sin_th * cdth + cos_th * sdth
                 sin_nth = sin_th * cdth + cos_th * sdth
                 
-                is_valid, _ = check_collision(nx, ny, nth, sin_nth)
+                is_valid, _ = check_collision(nx, ny, nth, sin_nth,
+                                              no_corridor=no_corridor)
                 if not is_valid:
                     ok = False
                     break
@@ -159,6 +188,11 @@ def plan_path(x0, y0, theta0, precomp_prim):
                     final_path.append(curr[1])
                     curr = curr[0]
                 final_path.reverse()
+                if stats is not None:
+                    stats['expanded'] = expanded
+                    stats['elapsed_ms'] = round((time.perf_counter() - t_start) * 1000.0, 1)
+                    stats['use_rs'] = use_rs
+                    stats['no_corridor'] = no_corridor
                 return True, final_path
                 
             # 计算 Cost 计分 (严格依照题意记分板规则)
@@ -182,29 +216,41 @@ def plan_path(x0, y0, theta0, precomp_prim):
             if visited.get(nkey, float('inf')) > new_cost:
                 visited[nkey] = new_cost
                 
-                # ==== Heuristic 启发式漏洞评估 ====
-                # 拆解逻辑手动优化 max 和 abs 以避开大量的函数调用栈开销
-                dx_h = nx - 2.25 if nx > 2.25 else 0.0
-                abs_ny = ny if ny > 0 else -ny
-                dy_h = abs_ny - 0.18 if abs_ny > 0.18 else 0.0
-                abs_nth = nth if nth > 0 else -nth
-                dth_h = abs_nth - ALIGN_GOAL_DYAW if abs_nth > ALIGN_GOAL_DYAW else 0.0
+                # ==== Heuristic ====
+                if use_rs:
+                    # RS 距离（米）除以最大速度（0.25 m/s）换算为时间下界（秒）
+                    # 使得启发值与 A* 代价量纲一致，保证可容许性
+                    rs_dist = rs.rs_distance_pose(
+                        nx, ny, nth,
+                        RS_GOAL_X, RS_GOAL_Y, RS_GOAL_TH,
+                        MIN_TURN_RADIUS
+                    )
+                    h = rs_dist / 0.25  # max forward speed = 0.25 m/s
+                else:
+                    # 原有手工几何启发式（保留用于对比）
+                    dx_h = nx - 2.25 if nx > 2.25 else 0.0
+                    abs_ny = ny if ny > 0 else -ny
+                    dy_h = abs_ny - 0.18 if abs_ny > 0.18 else 0.0
+                    abs_nth = nth if nth > 0 else -nth
+                    dth_h = abs_nth - ALIGN_GOAL_DYAW if abs_nth > ALIGN_GOAL_DYAW else 0.0
+
+                    room_needed = 2.10 + dy_h * 2.5 + dth_h * 1.5
+                    if room_needed > 2.95:
+                        room_needed = 2.95
+
+                    back_up_penalty = 0.0
+                    if nx < room_needed and (dy_h > 0.05 or dth_h > 0.05):
+                        back_up_penalty = (room_needed - nx) * 8.0
+
+                    h = dx_h * 4.0 + dy_h * 8.0 + dth_h * 4.0 + back_up_penalty
+                # ===================
                 
-                room_needed = 2.10 + dy_h * 2.5 + dth_h * 1.5
-                if room_needed > 2.95: 
-                    room_needed = 2.95
-                    
-                # 退让漏斗 (Back-up Penalty)：如发觉车辆太靠墙但角度横向未打正，严厉施加惩罚以逼迫其换入 R 倒挡退让避险！
-                back_up_penalty = 0.0
-                if nx < room_needed and (dy_h > 0.05 or dth_h > 0.05):
-                    back_up_penalty = (room_needed - nx) * 8.0
-                    
-                h = dx_h * 4.0 + dy_h * 8.0 + dth_h * 4.0 + back_up_penalty
-                # ==================================
-                
+                # RS 启发已是真实代价单位，权重 1.0 保证可容许性
+                # 几何启发是经验值，原作者调参为 1.5 倍加权
+                h_weight = 1.0 if use_rs else 1.5
                 tiebreaker += 1
                 heapq.heappush(q, (
-                    new_cost + h * 1.5,
+                    new_cost + h * h_weight,
                     tiebreaker,
                     new_cost,
                     nx, ny, nth,
@@ -214,6 +260,12 @@ def plan_path(x0, y0, theta0, precomp_prim):
                     (path_node, act)
                 ))
                 
+    if stats is not None:
+        stats['expanded'] = expanded
+        stats['elapsed_ms'] = round((time.perf_counter() - t_start) * 1000.0, 1)
+        stats['use_rs'] = use_rs
+        stats['no_corridor'] = no_corridor
+
     return False, None
 
 def simulate_path(x0, y0, theta0, actions, precomp_prim):

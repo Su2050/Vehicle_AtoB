@@ -115,6 +115,13 @@ class App:
         self.msg = ""
         self.msg_color = COL_TEXT
 
+        # Heuristic mode flags
+        self.use_rs = False       # Tab to toggle: Geometric / RS
+        self.no_corridor = False  # C   to toggle: Corridor / No-Corridor
+
+        # Last planning stats
+        self.last_stats = {}
+
         self.move_speed = 0.8   # m/s
         self.rot_speed = 2.0    # rad/s
         self.dragging = False
@@ -144,6 +151,16 @@ class App:
                 return
             if ev.key == pygame.K_SPACE or ev.key == pygame.K_RETURN:
                 self._plan()
+            elif ev.key == pygame.K_TAB:
+                self.use_rs = not self.use_rs
+                self.path = []
+                self.finished = False
+                self.last_stats = {}
+            elif ev.key == pygame.K_c:
+                self.no_corridor = not self.no_corridor
+                self.path = []
+                self.finished = False
+                self.last_stats = {}
 
         if self.planning or self.animating:
             return
@@ -211,13 +228,22 @@ class App:
     # ── planning ───────────────────────────────────────────────
     def _plan(self):
         self.planning = True
-        self.msg = "Planning..."
+        heur_label = "RS" if self.use_rs else "Geometric"
+        corr_label = "NoCorr" if self.no_corridor else "Corridor"
+        self.msg = f"Planning... [{heur_label} + {corr_label}]"
         self.msg_color = COL_TEXT
         self._draw()
         pygame.display.flip()
 
-        ok, acts = main.plan_path(self.sx, self.sy, self.sth, self.prims)
+        st = {}
+        ok, acts = main.plan_path(
+            self.sx, self.sy, self.sth, self.prims,
+            use_rs=self.use_rs,
+            no_corridor=self.no_corridor,
+            stats=st,
+        )
         self.planning = False
+        self.last_stats = st
 
         if not ok:
             self.msg = "IMPOSSIBLE"
@@ -245,7 +271,7 @@ class App:
         self.path = traj
         self.anim_i = 0
         self.animating = True
-        self.msg = f"Path: {len(acts)} primitives, {len(traj)} frames"
+        self.msg = f"Found: {len(acts)} steps  |  {st.get('expanded', '?')} expanded  |  {st.get('elapsed_ms', '?')}ms"
         self.msg_color = (0, 150, 50)
 
     def _reset(self):
@@ -254,6 +280,7 @@ class App:
         self.finished = False
         self.path = []
         self.anim_i = 0
+        self.last_stats = {}
         self.sx, self.sy, self.sth = 2.8, 0.0, 0.0
         self.msg = "Reset"
         self.msg_color = COL_TEXT
@@ -512,19 +539,48 @@ class App:
         is_valid, _ = main.check_collision(self.sx, self.sy, self.sth)
         status_dot = (80, 200, 120) if is_valid else (220, 60, 60)
 
-        # Position info
+        # ── Left column: position + status ───────────────────────────
         pygame.draw.circle(self.screen, status_dot, (25, bar_y + 18), 6)
-        info = f"Ref: ({self.sx:.2f}, {self.sy:.2f})  Theta: {math.degrees(self.sth):.1f} deg"
+        info = "Ref: ({:.2f}, {:.2f})  Theta: {:.1f} deg".format(
+            self.sx, self.sy, math.degrees(self.sth))
         self.screen.blit(self.big_font.render(info, True, COL_TEXT), (40, bar_y + 8))
 
-        # Status message
         if self.msg:
-            self.screen.blit(self.title_font.render(self.msg, True, self.msg_color), (40, bar_y + 32))
+            self.screen.blit(self.title_font.render(self.msg, True, self.msg_color),
+                             (40, bar_y + 30))
 
-        # Controls help
+        # ── Centre: mode badges ───────────────────────────────────────
+        heur_label = "RS Heuristic" if self.use_rs else "Geometric"
+        heur_col   = (30, 120, 200) if self.use_rs else (100, 100, 110)
+        corr_label = "No Corridor" if self.no_corridor else "Corridor ON"
+        corr_col   = (200, 100, 30) if self.no_corridor else (80, 150, 80)
+
+        def badge(text, color, x, y):
+            surf = self.label_font.render(text, True, (255, 255, 255))
+            pad = 6
+            bg = pygame.Surface((surf.get_width() + pad * 2, surf.get_height() + 4),
+                                 pygame.SRCALPHA)
+            bg.fill((*color, 220))
+            self.screen.blit(bg, (x, y))
+            self.screen.blit(surf, (x + pad, y + 2))
+            return x + bg.get_width() + 6
+
+        cx_badge = SCREEN_WIDTH // 2 - 130
+        cx_badge = badge(heur_label, heur_col, cx_badge, bar_y + 8)
+        badge(corr_label, corr_col, cx_badge, bar_y + 8)
+
+        # Last stats row
+        if self.last_stats:
+            st = self.last_stats
+            stat_str = "expanded: {}  time: {}ms".format(
+                st.get('expanded', '—'), st.get('elapsed_ms', '—'))
+            ss = self.font.render(stat_str, True, COL_TEXT_DIM)
+            self.screen.blit(ss, (SCREEN_WIDTH // 2 - ss.get_width() // 2, bar_y + 34))
+
+        # ── Right column: key help ────────────────────────────────────
         lines = [
             "W/S/A/D=Move  Q/E=Rotate  SPACE=Plan  R=Reset  F=Fast",
-            "Click/Drag=Set position"
+            "Tab=Heuristic(Geo/RS)  C=Corridor  Click/Drag=Set pos",
         ]
         for i, line in enumerate(lines):
             s = self.font.render(line, True, COL_TEXT_DIM)
