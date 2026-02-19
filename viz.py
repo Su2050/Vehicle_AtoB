@@ -2,6 +2,11 @@ import pygame
 import math
 import sys
 import main
+try:
+    import smooth as smooth_mod
+    _SMOOTH_AVAILABLE = True
+except ImportError:
+    _SMOOTH_AVAILABLE = False
 
 SCREEN_WIDTH = 1200
 SCREEN_HEIGHT = 800
@@ -48,8 +53,11 @@ COL_BODY_OK   = (50, 120, 220)
 COL_BODY_BAD  = (220, 60, 60)
 COL_FORK      = (80, 80, 90)
 COL_FORK_TIP  = (220, 50, 50)
-COL_PATH      = (30, 100, 255)
-COL_PATH_HIST = (30, 100, 255, 60)
+COL_PATH        = (30, 100, 255)
+COL_PATH_HIST   = (30, 100, 255, 60)
+COL_PATH_RAW    = (150, 180, 255)   # raw path (light blue)
+COL_PATH_SMOOTH = (255, 150, 50)    # smoothed path (orange)
+COL_PATH_RS     = (180, 100, 220)   # RS analytic expansion segment (purple)
 COL_TEXT       = (30, 30, 40)
 COL_TEXT_DIM   = (120, 120, 130)
 COL_LABEL_BG   = (255, 255, 255, 200)
@@ -107,7 +115,9 @@ class App:
         self.sy = 0.0
         self.sth = 0.0
 
-        self.path = []
+        self.path = []          # raw discrete trajectory
+        self.smooth_path = []   # B-spline smoothed trajectory
+        self.rs_traj = []       # RS analytic expansion segment (tail of path)
         self.planning = False
         self.animating = False
         self.anim_i = 0
@@ -115,9 +125,10 @@ class App:
         self.msg = ""
         self.msg_color = COL_TEXT
 
-        # Heuristic mode flags
-        self.use_rs = False       # Tab to toggle: Geometric / RS
-        self.no_corridor = False  # C   to toggle: Corridor / No-Corridor
+        # Heuristic / obstacle mode flags
+        self.use_rs = False       # Tab  to toggle: Geometric / RS heuristic
+        self.no_corridor = False  # C    to toggle: Corridor / No-Corridor
+        self.use_smooth = False   # P    to toggle: show smoothed path
 
         # Last planning stats
         self.last_stats = {}
@@ -154,13 +165,18 @@ class App:
             elif ev.key == pygame.K_TAB:
                 self.use_rs = not self.use_rs
                 self.path = []
+                self.smooth_path = []
                 self.finished = False
                 self.last_stats = {}
             elif ev.key == pygame.K_c:
                 self.no_corridor = not self.no_corridor
                 self.path = []
+                self.smooth_path = []
                 self.finished = False
                 self.last_stats = {}
+            elif ev.key == pygame.K_p:
+                if _SMOOTH_AVAILABLE and self.path:
+                    self.use_smooth = not self.use_smooth
 
         if self.planning or self.animating:
             return
@@ -230,13 +246,13 @@ class App:
         self.planning = True
         heur_label = "RS" if self.use_rs else "Geometric"
         corr_label = "NoCorr" if self.no_corridor else "Corridor"
-        self.msg = f"Planning... [{heur_label} + {corr_label}]"
+        self.msg = "Planning... [{} + {}]".format(heur_label, corr_label)
         self.msg_color = COL_TEXT
         self._draw()
         pygame.display.flip()
 
         st = {}
-        ok, acts = main.plan_path(
+        ok, acts, rs_traj = main.plan_path(
             self.sx, self.sy, self.sth, self.prims,
             use_rs=self.use_rs,
             no_corridor=self.no_corridor,
@@ -250,11 +266,12 @@ class App:
             self.msg_color = (200, 50, 50)
             return
 
+        # ── 重建 A* 基元段轨迹 ──────────────────────────────────────
         traj = [(self.sx, self.sy, self.sth)]
         cx, cy, cth = self.sx, self.sy, self.sth
         pmap = {p[0]: p[2] for p in self.prims}
 
-        for act in acts:
+        for act in (acts or []):
             seg = pmap.get(act)
             if seg is None:
                 continue
@@ -268,10 +285,26 @@ class App:
                 traj.append((nx, ny, nth))
             cx, cy, cth = traj[-1]
 
+        # ── 拼接 RS 解析扩展尾段 ────────────────────────────────────
+        self.rs_traj = rs_traj or []
+        if self.rs_traj:
+            traj.extend(self.rs_traj[1:])  # 首点已在 traj 末尾
+
         self.path = traj
+
+        # ── 可选 B 样条平滑 ─────────────────────────────────────────
+        if _SMOOTH_AVAILABLE and len(traj) >= 4:
+            self.smooth_path = smooth_mod.smooth_path(traj)
+        else:
+            self.smooth_path = []
+
         self.anim_i = 0
         self.animating = True
-        self.msg = f"Found: {len(acts)} steps  |  {st.get('expanded', '?')} expanded  |  {st.get('elapsed_ms', '?')}ms"
+
+        rs_tag = "  [RS Expand]" if self.rs_traj else ""
+        n_steps = len(acts) if acts else 0
+        self.msg = "Found: {} steps  |  {} expanded  |  {}ms{}".format(
+            n_steps, st.get('expanded', '?'), st.get('elapsed_ms', '?'), rs_tag)
         self.msg_color = (0, 150, 50)
 
     def _reset(self):
@@ -279,6 +312,8 @@ class App:
         self.animating = False
         self.finished = False
         self.path = []
+        self.smooth_path = []
+        self.rs_traj = []
         self.anim_i = 0
         self.last_stats = {}
         self.sx, self.sy, self.sth = 2.8, 0.0, 0.0
@@ -300,10 +335,14 @@ class App:
             self._draw_path()
 
         if self.animating and self.path:
-            fx, fy, ft = self.path[self.anim_i]
+            active = self.smooth_path if (self.use_smooth and self.smooth_path) else self.path
+            end_frac = self.anim_i / max(len(self.path) - 1, 1)
+            anim_idx = min(int(end_frac * (len(active) - 1)), len(active) - 1)
+            fx, fy, ft = active[anim_idx]
             self._draw_forklift(fx, fy, ft)
         elif self.finished and self.path:
-            fx, fy, ft = self.path[-1]
+            active = self.smooth_path if (self.use_smooth and self.smooth_path) else self.path
+            fx, fy, ft = active[-1]
             self._draw_forklift(fx, fy, ft)
         else:
             self._draw_forklift(self.sx, self.sy, self.sth)
@@ -456,20 +495,34 @@ class App:
         self.screen.blit(y_lbl, (SCREEN_WIDTH // 2 - y_lbl.get_width() // 2, bottom_y))
 
     def _draw_path(self):
-        t = self.trans
+        tr = self.trans
         if len(self.path) < 2:
             return
 
-        # Full planned path (thin, lighter)
-        pts = [t.w2s(p[0], p[1]) for p in self.path]
-        pygame.draw.lines(self.screen, (150, 180, 255), False, pts, 2)
+        active_path = self.smooth_path if (self.use_smooth and self.smooth_path) else self.path
 
-        # Traversed path (thick, solid)
+        # ── 始终绘制原始路径（细蓝色）──────────────────────────────
+        raw_pts = [tr.w2s(p[0], p[1]) for p in self.path]
+        pygame.draw.lines(self.screen, COL_PATH_RAW, False, raw_pts, 1)
+
+        # ── RS 解析扩展尾段（紫色标注）─────────────────────────────
+        if self.rs_traj and len(self.rs_traj) > 1:
+            rs_pts = [tr.w2s(p[0], p[1]) for p in self.rs_traj]
+            pygame.draw.lines(self.screen, COL_PATH_RS, False, rs_pts, 3)
+
+        # ── 平滑轨迹（橙色，仅在 P 键开启时绘制）──────────────────
+        if self.use_smooth and self.smooth_path and len(self.smooth_path) > 1:
+            sm_pts = [tr.w2s(p[0], p[1]) for p in self.smooth_path]
+            pygame.draw.lines(self.screen, COL_PATH_SMOOTH, False, sm_pts, 3)
+
+        # ── 动画前进段（加粗显示已走过部分）───────────────────────
         if self.animating or self.finished:
-            end = self.anim_i + 1 if self.animating else len(self.path)
-            if end > 1:
-                sub = [t.w2s(self.path[i][0], self.path[i][1]) for i in range(end)]
-                pygame.draw.lines(self.screen, COL_PATH, False, sub, 3)
+            end_frac = self.anim_i / max(len(self.path) - 1, 1)
+            end_idx = int(end_frac * (len(active_path) - 1)) + 1 if self.animating else len(active_path)
+            if end_idx > 1:
+                sub = [tr.w2s(active_path[i][0], active_path[i][1]) for i in range(end_idx)]
+                col = COL_PATH_SMOOTH if (self.use_smooth and self.smooth_path) else COL_PATH
+                pygame.draw.lines(self.screen, col, False, sub, 3)
 
     def _draw_forklift(self, x, y, theta):
         t = self.trans
@@ -565,9 +618,16 @@ class App:
             self.screen.blit(surf, (x + pad, y + 2))
             return x + bg.get_width() + 6
 
-        cx_badge = SCREEN_WIDTH // 2 - 130
+        smooth_label = "Smooth ON" if self.use_smooth else "Smooth OFF"
+        smooth_col   = (200, 120, 30) if self.use_smooth else (140, 140, 150)
+
+        cx_badge = SCREEN_WIDTH // 2 - 180
         cx_badge = badge(heur_label, heur_col, cx_badge, bar_y + 8)
-        badge(corr_label, corr_col, cx_badge, bar_y + 8)
+        cx_badge = badge(corr_label, corr_col, cx_badge, bar_y + 8)
+        cx_badge = badge(smooth_label, smooth_col, cx_badge, bar_y + 8)
+
+        if self.rs_traj:
+            badge("RS Expand", (140, 60, 200), cx_badge, bar_y + 8)
 
         # Last stats row
         if self.last_stats:
@@ -580,7 +640,7 @@ class App:
         # ── Right column: key help ────────────────────────────────────
         lines = [
             "W/S/A/D=Move  Q/E=Rotate  SPACE=Plan  R=Reset  F=Fast",
-            "Tab=Heuristic(Geo/RS)  C=Corridor  Click/Drag=Set pos",
+            "Tab=Heuristic  C=Corridor  P=Smooth  Click/Drag=SetPos",
         ]
         for i, line in enumerate(lines):
             s = self.font.render(line, True, COL_TEXT_DIM)

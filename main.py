@@ -21,6 +21,15 @@ RS_GOAL_X = 2.10
 RS_GOAL_Y = 0.0
 RS_GOAL_TH = 0.0
 
+# RS 解析终点扩展：离目标的 RS 距离小于此值时，尝试直接用 RS 曲线一杆进洞
+RS_EXPANSION_RADIUS = 1.5  # meters
+
+# === 路径质量惩罚常量 ===
+# 换挡惩罚：前进→倒退 或 倒退→前进 时施加（相当于约 12 步）
+GEAR_CHANGE_PENALTY = 3.0  # seconds
+# 急打方向盘惩罚：单步转向比变化超过 0.5 时施加
+STEER_JUMP_PENALTY = 0.5   # seconds
+
 def init_primitives():
     """前向积分预推演 30 种运动基元，并将相对坐标增量与相对角度的正余弦值进行缓存"""
     gears = [('F', 0.25), ('R', -0.20)]
@@ -78,6 +87,15 @@ def check_collision(nx, ny, nth, sin_nth=None, no_corridor=False):
 
     return True, 'OK'
 
+def _check_traj_collision(traj, no_corridor=False):
+    """对一组轨迹点 [(x,y,th),...] 逐点做碰撞检测，全通过返回 True"""
+    for x, y, th in traj:
+        is_valid, _ = check_collision(x, y, th, no_corridor=no_corridor)
+        if not is_valid:
+            return False
+    return True
+
+
 def plan_path(x0, y0, theta0, precomp_prim,
               use_rs=False, stats=None, no_corridor=False):
     """
@@ -94,9 +112,10 @@ def plan_path(x0, y0, theta0, precomp_prim,
         no_corridor : 若为 True，跳过安全走廊碰撞检测，仅保留硬墙边界；
                       用于在接近无障碍环境下验证 RS 启发函数
 
-    返回: (success, result)
-        success: True/False
-        result : actions list if success, else None
+    返回: (success, actions, rs_traj)
+        success  : True/False
+        actions  : 动作列表 if success, else None
+        rs_traj  : RS 解析扩展轨迹点列表 [(x,y,th),...] if RS 扩展成功, else None
     """
     t_start = time.perf_counter()
     visited = {}
@@ -111,13 +130,14 @@ def plan_path(x0, y0, theta0, precomp_prim,
     visited[start_key] = 0.0
     
     tiebreaker = 0
-    # 优先队列 Tuple : (f_score, tiebreaker, cost, x, y, th, prev_s, steps, path_len, path_node)
-    q = [(0.0, tiebreaker, 0.0, x0, y0, theta0, 0.0, 0, 0, None)]
+    # 优先队列 Tuple:
+    # (f_score, tiebreaker, cost, x, y, th, prev_gear, prev_s, steps, path_len, path_node)
+    q = [(0.0, tiebreaker, 0.0, x0, y0, theta0, 'N', 0.0, 0, 0, None)]
     
     expanded = 0
     
     while q:
-        f, _, cost, cx, cy, cth, prev_s, steps, path_len, path_node = heapq.heappop(q)
+        f, _, cost, cx, cy, cth, prev_gear, prev_s, steps, path_len, path_node = heapq.heappop(q)
         
         c_ix = int((cx - 1.9) * 50.0 + 0.5)
         if c_ix < 0: c_ix = 0
@@ -128,7 +148,39 @@ def plan_path(x0, y0, theta0, precomp_prim,
         # 延后状态甄别 (Outdated node pruning)
         if visited.get(ckey, float('inf')) < cost - 1e-5:
             continue
-            
+
+        # ── RS 解析终点扩展（一杆进洞）──────────────────────────────
+        # 当前节点离目标足够近时，尝试用 RS 曲线直接连到终点，
+        # 绕过剩余的 A* 基元搜索，消除终点盲搜揉库问题。
+        rs_dist_to_goal = rs.rs_distance_pose(
+            cx, cy, cth,
+            RS_GOAL_X, RS_GOAL_Y, RS_GOAL_TH,
+            MIN_TURN_RADIUS
+        )
+        if rs_dist_to_goal < RS_EXPANSION_RADIUS:
+            rs_traj = rs.rs_sample_path(
+                cx, cy, cth,
+                RS_GOAL_X, RS_GOAL_Y, RS_GOAL_TH,
+                MIN_TURN_RADIUS, step=DT * 0.5
+            )
+            if rs_traj and _check_traj_collision(rs_traj, no_corridor):
+                # RS 曲线无碰撞，直接拼接到已有路径后返回
+                # 重构动作链
+                final_path = []
+                curr = path_node
+                while curr is not None:
+                    final_path.append(curr[1])
+                    curr = curr[0]
+                final_path.reverse()
+                if stats is not None:
+                    stats['expanded'] = expanded
+                    stats['elapsed_ms'] = round((time.perf_counter() - t_start) * 1000.0, 1)
+                    stats['use_rs'] = use_rs
+                    stats['no_corridor'] = no_corridor
+                    stats['rs_expansion'] = True
+                return True, final_path, rs_traj
+        # ────────────────────────────────────────────────────────────
+
         # Primitive 数量上限硬约束
         if path_len >= 30:
             continue
@@ -193,9 +245,10 @@ def plan_path(x0, y0, theta0, precomp_prim,
                     stats['elapsed_ms'] = round((time.perf_counter() - t_start) * 1000.0, 1)
                     stats['use_rs'] = use_rs
                     stats['no_corridor'] = no_corridor
-                return True, final_path
+                    stats['rs_expansion'] = False
+                return True, final_path, None
                 
-            # 计算 Cost 计分 (严格依照题意记分板规则)
+            # 计算 Cost 计分
             step_time = N * DT
             step_cost = step_time
             if act[0] == 'R':
@@ -203,6 +256,12 @@ def plan_path(x0, y0, theta0, precomp_prim,
             if path_len > 0:
                 diff = act[1] - prev_s
                 step_cost += 0.3 * (diff if diff >= 0 else -diff)
+                # 换挡惩罚：前进↔倒退切换（根治 zig-zag 抽搐）
+                if act[0] != prev_gear and prev_gear != 'N':
+                    step_cost += GEAR_CHANGE_PENALTY
+                # 急打方向盘惩罚：单步转向比变化 > 0.5
+                if (diff if diff >= 0 else -diff) > 0.5:
+                    step_cost += STEER_JUMP_PENALTY
                 
             new_cost = cost + step_cost
             
@@ -254,7 +313,8 @@ def plan_path(x0, y0, theta0, precomp_prim,
                     tiebreaker,
                     new_cost,
                     nx, ny, nth,
-                    act[1],
+                    act[0],   # prev_gear
+                    act[1],   # prev_s
                     new_steps,
                     path_len + 1,
                     (path_node, act)
@@ -265,8 +325,9 @@ def plan_path(x0, y0, theta0, precomp_prim,
         stats['elapsed_ms'] = round((time.perf_counter() - t_start) * 1000.0, 1)
         stats['use_rs'] = use_rs
         stats['no_corridor'] = no_corridor
+        stats['rs_expansion'] = False
 
-    return False, None
+    return False, None, None
 
 def simulate_path(x0, y0, theta0, actions, precomp_prim):
     """
@@ -330,7 +391,7 @@ def solve():
         theta0 = float(input_data[idx+2])
         idx += 3
         
-        success, result = plan_path(x0, y0, theta0, precomp_prim)
+        success, result, _ = plan_path(x0, y0, theta0, precomp_prim)
         
         if success:
             final_path = result

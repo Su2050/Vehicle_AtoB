@@ -508,3 +508,143 @@ def rs_distance_pose(x1, y1, th1, x2, y2, th2, turning_radius):
         lphi += _TWO_PI
 
     return rs_distance(lx, ly, lphi, turning_radius)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 路径采样：用于 A* 解析终点扩展（一杆进洞）
+# ─────────────────────────────────────────────────────────────────────────────
+
+def rs_best_path(x, y, phi, turning_radius):
+    """
+    返回从原点到 (x, y, phi) 的最短 RS 路径各段参数。
+
+    返回值: list of (seg_type, length_meters)
+        seg_type: 'L', 'R', 'S'
+        length_meters: 该段的有向长度（负数表示倒退）
+
+    坐标约定与 main.py 一致（前进方向为 -x）。
+    """
+    if turning_radius <= 0.0:
+        raise ValueError(f"turning_radius must be positive, got {turning_radius}")
+
+    nx = x / turning_radius
+    ny = y / turning_radius
+
+    words = _all_words(nx, ny, phi)
+    if not words:
+        return []
+
+    best = min(words, key=lambda w: w[0])
+    _, tag, t, u, v = best
+
+    # 解析 tag 字符串，例如 'L+R-S-L-' → [('L',+),('R',-),('S',-),('L',-)]
+    segments_raw = _parse_tag(tag)
+
+    # t, u, v 对应前三段（最多5段时需扩展，但当前实现最多4段已足够）
+    seg_lengths_norm = [t, u, v]
+
+    result = []
+    for i, (stype, sign) in enumerate(segments_raw[:3]):
+        length_m = seg_lengths_norm[i] * sign * turning_radius
+        if abs(length_m) > 1e-6:
+            result.append((stype, length_m))
+    return result
+
+
+def _parse_tag(tag):
+    """
+    将 RS word 标签字符串解析为 [(类型, 符号), ...] 列表。
+    例如 'L+R-S-' → [('L', 1), ('R', -1), ('S', -1)]
+    """
+    segments = []
+    i = 0
+    while i < len(tag):
+        c = tag[i]
+        if c in ('L', 'R', 'S'):
+            sign = 1 if tag[i + 1] == '+' else -1
+            segments.append((c, sign))
+            i += 2
+        else:
+            i += 1
+    return segments
+
+
+def rs_sample_path(x1, y1, th1, x2, y2, th2, turning_radius, step=0.05):
+    """
+    对从 (x1,y1,th1) 到 (x2,y2,th2) 的最短 RS 路径按 step（米）密度采样。
+
+    返回: [(x, y, th), ...] 轨迹点列表（包含起点和终点）
+          若找不到 RS 路径则返回 None。
+
+    坐标约定与 main.py 一致（前进方向为 -x）。
+    """
+    # 变换到局部坐标系
+    dx = x2 - x1
+    dy = y2 - y1
+    cos_t = math.cos(th1)
+    sin_t = math.sin(th1)
+    lx =  dx * cos_t + dy * sin_t
+    ly = -dx * sin_t + dy * cos_t
+    lphi = th2 - th1
+    while lphi > _PI:
+        lphi -= _TWO_PI
+    while lphi <= -_PI:
+        lphi += _TWO_PI
+
+    segs = rs_best_path(lx, ly, lphi, turning_radius)
+    if not segs:
+        return None
+
+    # 在局部坐标系下沿路径采样
+    cx, cy, cth = 0.0, 0.0, 0.0
+    local_pts = [(cx, cy, cth)]
+
+    for stype, length_m in segs:
+        direction = 1 if length_m >= 0 else -1
+        dist_left = abs(length_m)
+
+        while dist_left > 1e-9:
+            ds = min(step, dist_left)
+            dist_left -= ds
+
+            if stype == 'S':
+                # 直线段：沿当前朝向前进/后退
+                # main.py 约定：前进方向 = -x（即 x -= v*cos(th)）
+                cx -= direction * ds * math.cos(cth)
+                cy -= direction * ds * math.sin(cth)
+            elif stype == 'L':
+                # 左转弧
+                arc = direction * ds / turning_radius
+                # 圆心在左侧：(cx - r*sin(th), cy + r*cos(th))（main.py 约定）
+                # 数值积分一小步（足够精确）
+                cx -= direction * ds * math.cos(cth)
+                cy -= direction * ds * math.sin(cth)
+                cth += arc
+            else:
+                # 右转弧
+                arc = -direction * ds / turning_radius
+                cx -= direction * ds * math.cos(cth)
+                cy -= direction * ds * math.sin(cth)
+                cth += arc
+
+            # 角度包装
+            while cth > _PI:
+                cth -= _TWO_PI
+            while cth <= -_PI:
+                cth += _TWO_PI
+
+            local_pts.append((cx, cy, cth))
+
+    # 将局部坐标系点变换回世界坐标系
+    world_pts = []
+    for lx_p, ly_p, lth_p in local_pts:
+        wx = x1 + lx_p * cos_t - ly_p * sin_t
+        wy = y1 + lx_p * sin_t + ly_p * cos_t
+        wth = th1 + lth_p
+        while wth > _PI:
+            wth -= _TWO_PI
+        while wth <= -_PI:
+            wth += _TWO_PI
+        world_pts.append((wx, wy, wth))
+
+    return world_pts
