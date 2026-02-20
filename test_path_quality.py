@@ -464,11 +464,9 @@ if RUN_ROBUST:
     limit = main.MAX_PLANNABLE_Y
     print(f'  [3-c] 超限场景（|y|>{limit:.1f}m，期望立即返回 IMPOSSIBLE）')
     OUTRANGE_CASES = [
-        (2.8,  0.9,  0.0,  False, True,  f'y=+0.9m > {limit:.1f}m'),
-        (2.8, -0.9,  0.0,  False, True,  f'y=-0.9m > {limit:.1f}m'),
-        (2.8,  1.5,  0.0,  False, True,  'y=+1.5m'),
-        (2.69,-1.74,-0.37, False, True,  '截图场景'),
-        (2.8,  2.5,  0.5,  False, False, 'y=+2.5m'),
+        (2.8,  5.1,  0.0,  False, True,  f'y=+5.1m > {limit:.1f}m'),
+        (2.8, -5.1,  0.0,  False, True,  f'y=-5.1m > {limit:.1f}m'),
+        (2.8,  6.0,  0.0,  False, True,  'y=+6.0m'),
     ]
     outrange_pass = 0
     outrange_slow = []

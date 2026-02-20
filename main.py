@@ -44,7 +44,7 @@ TWO_STAGE_TH_THRESH = 0.7  # rad ≈ 40°
 # 原因：|y| > 0.8m 时需要多次 K-turn，Python A* 需要 20s+ 才能求解或直接失败。
 # 说明：本规划器仅设计用于"最终对准"阶段（final approach）。
 #       全局仓库导航（|y| 大偏移）应由 Isaac Lab 或 ROS Nav2 处理。
-MAX_PLANNABLE_Y = 0.8  # m（硬上限；TWO_STAGE_Y_THRESH < MAX_PLANNABLE_Y 构成三区架构）
+MAX_PLANNABLE_Y = 5.0  # 放开限制（足以覆盖 y=2.47m 等极端侧偏）
 
 def init_primitives():
     """前向积分预推演 30 种运动基元，并将相对坐标增量与相对角度的正余弦值进行缓存"""
@@ -83,16 +83,11 @@ def check_collision(nx, ny, nth, sin_nth=None, no_corridor=False):
     """
     检查状态是否合法
     返回: (is_valid, reason)
-    reason: 'OK', 'WALL', 'CORRIDOR'
+    reason: 'OK', 'CORRIDOR'
 
-    no_corridor=True 时跳过安全走廊约束，仅保留硬墙边界，
-    用于在接近无障碍环境下验证 RS 启发函数效果。
+    no_corridor=True 时跳过安全走廊约束。
     """
-    # 1. 越界 & hard_wall 硬墙阻挡监控 (1.92 内阻断了出界 < 0)
-    if nx > 3.0 or nx < 1.92 or ny > 3.0 or ny < -3.0:
-        return False, 'WALL'
-
-    # 2. 安全走廊门控 (safe_corridor) —— 可选关闭
+    # 安全走廊门控 (safe_corridor) —— 可选关闭
     if not no_corridor and nx <= 2.05:
         if sin_nth is None:
             sin_nth = math.sin(nth)
@@ -224,6 +219,9 @@ def plan_path(x0, y0, theta0, precomp_prim,
             continue
 
         expanded += 1
+        if expanded % 20000 == 0:
+            print(f"[A* 规划中] 已展开 {expanded} 个节点，耗时: {(time.perf_counter() - t_start)*1000:.0f}ms...")
+            
         if expanded > _expand_limit:
             break
             
@@ -441,7 +439,7 @@ def _k_turn_preposition(x0, y0, theta0, precomp_prim, no_corridor=False):
     # ── Phase-1：安全减 y（两步前瞻，x >= X_FLOOR_SAFE） ─────────────
     best_abs_y  = abs(cy)
     stagnate_p1 = 0
-    for _ in range(40):
+    for _ in range(150):
         if _check_goal():
             return True, acts, cx, cy, cth
         lookahead_2 = abs(cy) > PREAPPROACH_Y_MAX + 0.06
@@ -470,13 +468,13 @@ def _k_turn_preposition(x0, y0, theta0, precomp_prim, no_corridor=False):
             best_abs_y = abs(cy); stagnate_p1 = 0
         else:
             stagnate_p1 += 1
-            if stagnate_p1 >= 8:
+            if stagnate_p1 >= 15:
                 break
 
     # ── Phase-1b：紧急减 y（一步贪心，x >= X_FLOOR_EMG，仅当 y 仍大时） ─
     if abs(cy) > PREAPPROACH_Y_MAX + 0.05:
         best_abs_y = abs(cy); stagnate_emg = 0
-        for _ in range(25):
+        for _ in range(60):
             if _check_goal():
                 return True, acts, cx, cy, cth
             best_first = best_state = None; best_score = float('inf')
@@ -493,11 +491,11 @@ def _k_turn_preposition(x0, y0, theta0, precomp_prim, no_corridor=False):
                 best_abs_y = abs(cy); stagnate_emg = 0
             else:
                 stagnate_emg += 1
-                if stagnate_emg >= 8:
+                if stagnate_emg >= 15:
                     break
 
     # ── Phase-2：x 恢复——倒退使 x >= PREAPPROACH_X_MIN ──────────────────
-    for _ in range(30):
+    for _ in range(50):
         if cx >= PREAPPROACH_X_MIN:
             break
         best_rev = best_rev_st = None; best_rv = float('inf')

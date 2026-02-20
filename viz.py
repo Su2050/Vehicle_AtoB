@@ -264,9 +264,7 @@ class App:
 
         if not ok:
             if st.get('out_of_range'):
-                self.msg = ("IMPOSSIBLE  |y|={:.2f}m 超出 {:.1f}m 上限  "
-                            "请手动将叉车移近中线再规划").format(
-                    abs(self.sy), main.MAX_PLANNABLE_Y)
+                self.msg = "IMPOSSIBLE  |y|={:.2f}m 超出可规划范围".format(abs(self.sy))
             else:
                 self.msg = "IMPOSSIBLE  规划失败（|y|={:.2f}m, |θ|={:.1f}°）".format(
                     abs(self.sy), abs(math.degrees(self.sth)))
@@ -347,13 +345,12 @@ class App:
         self.screen.fill(COL_BG)
         self._draw_canvas_bg()
         self._draw_grid()
-        self._draw_walls()
         self._draw_corridor()
         self._draw_goal()
         self._draw_pallet()
         self._draw_labels()
 
-        self._draw_plannable_zone()
+        # （已移除 plannable zone 虚线限制）
 
         if len(self.path) > 1:
             self._draw_path()
@@ -450,7 +447,7 @@ class App:
         t = self.trans
         # Safe corridor funnel: when x <= 2.05, tip_lat must be within sc
         # sc = 0.15 + (x - 1.87) * 0.8  if x > 1.87 else 0.15
-        # We draw this as a filled polygon (clipped to wall at x=1.92)
+        # Draw as a filled polygon. Left anchor keeps historical corridor shape.
         overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT), pygame.SRCALPHA)
         pts_top = []
         pts_bot = []
