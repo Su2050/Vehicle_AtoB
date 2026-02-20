@@ -31,7 +31,7 @@ STEER_JUMP_PENALTY  = 0.5  # seconds
 # === 两阶段规划参数 ===
 # 第一阶段宽松目标：完成 K-turn 返程后离墙有余量（x≥2.2），Stage-2 才容易求解
 PREAPPROACH_X_MIN  = 2.2   # 确保离墙足够远，Stage-2 启发函数不会过估计
-PREAPPROACH_X_MAX  = 3.0   # 工作区右边界
+PREAPPROACH_X_MAX  = 8.0   # 工作区右边界（放宽至 8.0m 允许大倒库空间）
 PREAPPROACH_Y_MAX  = 0.5   # 横向偏移 ≤ 0.5m
 PREAPPROACH_TH_MAX = 0.8   # 朝向偏差 ≤ ±46°
 
@@ -431,10 +431,11 @@ def _k_turn_preposition(x0, y0, theta0, precomp_prim, no_corridor=False):
         y_over = max(0.0, abs(ey) - PREAPPROACH_Y_MAX) * 10.0
         y_raw  = abs(ey) * 0.5
         x_pen  = max(0.0, PREAPPROACH_X_MIN - ex) * w_x * 5.0
-        # 对 x 的远端惩罚极小，只为了稍微收敛，给车辆留出拉大圆弧倒退的广阔空间
-        x_over = max(0.0, ex - 6.0) * 1.0
+        # 对 x 的远端惩罚改为温和渐进式，促使它在能够倒进去的前提下尽量选择紧凑弧线
+        x_over = max(0.0, ex - 3.2) * 1.5
         th_pen = max(0.0, abs(eth) - PREAPPROACH_TH_MAX) * 0.05
-        gear_pen = 0.0 if prev_gear is None or gear == prev_gear else 15.0
+        # 换挡惩罚下调至2.0，足以防止原地锯齿揉库，又不会不敢换挡
+        gear_pen = 0.0 if prev_gear is None or gear == prev_gear else 2.0
         return y_over + y_raw + x_pen + x_over + th_pen + gear_pen
 
     def _check_goal():
