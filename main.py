@@ -429,13 +429,13 @@ def _k_turn_preposition(x0, y0, theta0, precomp_prim, no_corridor=False):
 
     def _score_y(ex, ey, eth, gear=None, prev_gear=None, w_x=1.0):
         y_over = max(0.0, abs(ey) - PREAPPROACH_Y_MAX) * 10.0
-        y_raw  = abs(ey) * 0.5
+        y_raw  = abs(ey) * 1.5  # 提升：更渴望靠近 y=0，缩短路径
         x_pen  = max(0.0, PREAPPROACH_X_MIN - ex) * w_x * 5.0
         # 对 x 的远端惩罚改为温和渐进式，促使它在能够倒进去的前提下尽量选择紧凑弧线
-        x_over = max(0.0, ex - 3.2) * 1.5
+        x_over = max(0.0, ex - 3.2) * 2.0  # 提升：增强远端惩罚
         th_pen = max(0.0, abs(eth) - PREAPPROACH_TH_MAX) * 0.05
         # 换挡惩罚下调至2.0，足以防止原地锯齿揉库，又不会不敢换挡
-        gear_pen = 0.0 if prev_gear is None or gear == prev_gear else 2.0
+        gear_pen = 0.0 if prev_gear is None or gear == prev_gear else 1.0  # 降低：允许果断换挡
         return y_over + y_raw + x_pen + x_over + th_pen + gear_pen
 
     def _check_goal():
@@ -467,7 +467,7 @@ def _k_turn_preposition(x0, y0, theta0, precomp_prim, no_corridor=False):
                 
                 # 若两步前瞻可行，需将“当前步的换挡惩罚”加上
                 if local < float('inf'):
-                    cand = local + (0.0 if prev_gear is None or act1[0] == prev_gear else 50.0)
+                    cand = local + (0.0 if prev_gear is None or act1[0] == prev_gear else 1.0)
                 else:
                     cand = _score_y(ex1, ey1, eth1, gear=act1[0], prev_gear=prev_gear)
             else:
