@@ -139,7 +139,7 @@ def plan_path(x0, y0, theta0, precomp_prim,
     if ix0 < 0: ix0 = 0
     iy0 = int((y0 + 3.1) * 50.0 + 0.5)
     ith0 = int((theta0 + M_PI) * 50.0 + 0.5)
-    start_key = (ix0, iy0, ith0)
+    start_key = (ix0, iy0, ith0, 'N')
     
     visited[start_key] = 0.0
     
@@ -157,7 +157,7 @@ def plan_path(x0, y0, theta0, precomp_prim,
         if c_ix < 0: c_ix = 0
         c_iy = int((cy + 3.1) * 50.0 + 0.5)
         c_ith = int((cth + M_PI) * 50.0 + 0.5)
-        ckey = (c_ix, c_iy, c_ith)
+        ckey = (c_ix, c_iy, c_ith, prev_gear)
         
         # 延后状态甄别 (Outdated node pruning)
         if visited.get(ckey, float('inf')) < cost - 1e-5:
@@ -291,13 +291,16 @@ def plan_path(x0, y0, theta0, precomp_prim,
                 return True, final_path, None
                 
             # 计算 Cost 计分
-            # 注意：状态键仅含 (x, y, θ)，代价函数不可依赖 prev_s / prev_gear，
-            # 否则 A* 因状态不完整而无法找到需要 K-turn 的路径（状态关闭提前）。
-            # GEAR_CHANGE_PENALTY / STEER_JUMP_PENALTY 由 B-spline 后处理平滑承担。
+            # 状态键已包含 prev_gear，此处换挡惩罚由 B-spline 后处理和平滑代价共同承担。
+            # 为了平滑长线倒车，此处增加明显的档位切换惩罚 (GEAR_CHANGE_PENALTY)。
             step_time = N * DT
             step_cost = step_time
             if act[0] == 'R':
                 step_cost += 1.5 * step_time
+            
+            # 对换挡施加惩罚，鼓励顺滑的连续曲线
+            if prev_gear != 'N' and act[0] != prev_gear:
+                step_cost += 5.0
                 
             new_cost = cost + step_cost
             
@@ -305,7 +308,7 @@ def plan_path(x0, y0, theta0, precomp_prim,
             if n_ix < 0: n_ix = 0
             n_iy = int((ny + 3.1) * 50.0 + 0.5)
             n_ith = int((nth + M_PI) * 50.0 + 0.5)
-            nkey = (n_ix, n_iy, n_ith)
+            nkey = (n_ix, n_iy, n_ith, act[0])
             
             # 新代际更优状态则覆盖扩展
             if visited.get(nkey, float('inf')) > new_cost:
@@ -424,12 +427,15 @@ def _k_turn_preposition(x0, y0, theta0, precomp_prim, no_corridor=False):
                 return False, px, py, pth
         return True, ex, ey, eth
 
-    def _score_y(ex, ey, eth, w_x=1.0):
-        y_over = max(0.0, abs(ey) - PREAPPROACH_Y_MAX) * 4.0
-        y_raw  = abs(ey) * 0.15
-        x_pen  = max(0.0, PREAPPROACH_X_MIN - ex) * w_x
-        th_pen = max(0.0, abs(eth) - PREAPPROACH_TH_MAX) * 0.3
-        return y_over + y_raw + x_pen + th_pen
+    def _score_y(ex, ey, eth, gear=None, prev_gear=None, w_x=1.0):
+        y_over = max(0.0, abs(ey) - PREAPPROACH_Y_MAX) * 10.0
+        y_raw  = abs(ey) * 0.5
+        x_pen  = max(0.0, PREAPPROACH_X_MIN - ex) * w_x * 5.0
+        # 对 x 的远端惩罚极小，只为了稍微收敛，给车辆留出拉大圆弧倒退的广阔空间
+        x_over = max(0.0, ex - 6.0) * 1.0
+        th_pen = max(0.0, abs(eth) - PREAPPROACH_TH_MAX) * 0.05
+        gear_pen = 0.0 if prev_gear is None or gear == prev_gear else 15.0
+        return y_over + y_raw + x_pen + x_over + th_pen + gear_pen
 
     def _check_goal():
         return (abs(cy) <= PREAPPROACH_Y_MAX
@@ -444,6 +450,7 @@ def _k_turn_preposition(x0, y0, theta0, precomp_prim, no_corridor=False):
             return True, acts, cx, cy, cth
         lookahead_2 = abs(cy) > PREAPPROACH_Y_MAX + 0.06
         best_first = best_state = None
+        prev_gear = acts[-1][0] if acts else None
         best_score = float('inf')
         for act1, _n1, traj1 in precomp_prim:
             ok1, ex1, ey1, eth1 = _apply(cx, cy, cth, traj1, X_FLOOR_SAFE)
@@ -454,11 +461,16 @@ def _k_turn_preposition(x0, y0, theta0, precomp_prim, no_corridor=False):
                 for _a2, _n2, traj2 in precomp_prim:
                     ok2, ex2, ey2, eth2 = _apply(ex1, ey1, eth1, traj2, X_FLOOR_SAFE)
                     if ok2:
-                        s2 = _score_y(ex2, ey2, eth2)
+                        s2 = _score_y(ex2, ey2, eth2, gear=_a2[0], prev_gear=act1[0])
                         if s2 < local: local = s2
-                cand = local if local < float('inf') else _score_y(ex1, ey1, eth1)
+                
+                # 若两步前瞻可行，需将“当前步的换挡惩罚”加上
+                if local < float('inf'):
+                    cand = local + (0.0 if prev_gear is None or act1[0] == prev_gear else 50.0)
+                else:
+                    cand = _score_y(ex1, ey1, eth1, gear=act1[0], prev_gear=prev_gear)
             else:
-                cand = _score_y(ex1, ey1, eth1)
+                cand = _score_y(ex1, ey1, eth1, gear=act1[0], prev_gear=prev_gear)
             if cand < best_score:
                 best_score = cand; best_first = act1; best_state = (ex1, ey1, eth1)
         if best_first is None:
@@ -477,11 +489,13 @@ def _k_turn_preposition(x0, y0, theta0, precomp_prim, no_corridor=False):
         for _ in range(60):
             if _check_goal():
                 return True, acts, cx, cy, cth
-            best_first = best_state = None; best_score = float('inf')
+            best_first = best_state = None
+            prev_gear = acts[-1][0] if acts else None
+            best_score = float('inf')
             for act1, _n1, traj1 in precomp_prim:
                 ok1, ex1, ey1, eth1 = _apply(cx, cy, cth, traj1, X_FLOOR_EMG)
                 if not ok1: continue
-                cand = _score_y(ex1, ey1, eth1, w_x=0.5)   # x 惩罚减半，放宽向墙推进
+                cand = _score_y(ex1, ey1, eth1, gear=act1[0], prev_gear=prev_gear, w_x=0.5)   # x 惩罚减半，放宽向墙推进
                 if cand < best_score:
                     best_score = cand; best_first = act1; best_state = (ex1, ey1, eth1)
             if best_first is None:
@@ -498,15 +512,22 @@ def _k_turn_preposition(x0, y0, theta0, precomp_prim, no_corridor=False):
     for _ in range(50):
         if cx >= PREAPPROACH_X_MIN:
             break
-        best_rev = best_rev_st = None; best_rv = float('inf')
+        best_rev = best_rev_st = None
+        prev_gear = acts[-1][0] if acts else None
+        best_rv = float('inf')
         for act, _n, traj in precomp_prim:
-            if act[0] != 'R': continue
+            # 允许在极度靠近墙时前进，否则优先倒退
+            if act[0] != 'R' and cx >= X_FLOOR_EMG + 0.5:
+                continue
             ok_r, ex_r, ey_r, eth_r = _apply(cx, cy, cth, traj)
             if not ok_r: continue
+            
             x_lack = max(0.0, PREAPPROACH_X_MIN - ex_r) * 3.0
             dy_pen = abs(abs(ey_r) - abs(cy)) * 2.0
-            th_pen = max(0.0, abs(eth_r) - PREAPPROACH_TH_MAX) * 0.3
-            rv = x_lack + dy_pen + th_pen
+            th_pen = max(0.0, abs(eth_r) - PREAPPROACH_TH_MAX) * 0.05
+            gear_pen = 0.0 if prev_gear is None or act[0] == prev_gear else 50.0
+            
+            rv = x_lack + dy_pen + th_pen + gear_pen
             if rv < best_rv:
                 best_rv = rv; best_rev = act; best_rev_st = (ex_r, ey_r, eth_r)
         if best_rev is None: break
@@ -597,10 +618,9 @@ def plan_path_robust(x0, y0, theta0, precomp_prim,
         else:
             # 贪心已显著改善但未达硬阈值时，允许进入 Stage-2 继续精对准，
             # 避免回退到慢速单阶段 Direct A*。
-            # 阈值松绑：+0.15（Stage-2 新启发函数可处理 y≤0.65 的情况）
-            improved_enough = (abs(my) <= PREAPPROACH_Y_MAX + 0.15 and
-                               abs(my) <= abs(y0) - 0.08 and
-                               mx >= 2.0)
+            # 阈值再次松绑：只要把 y 压进 1.2m，Stage-2 的 A* 也能算出来，且比从头算快
+            improved_enough = (abs(my) <= PREAPPROACH_Y_MAX + 0.8 and
+                               abs(my) <= abs(y0) - 0.08)
             if improved_enough and acts1:
                 ok1 = True
                 stage1_mode = 'greedy_kturn_partial'
