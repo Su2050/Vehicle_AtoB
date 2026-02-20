@@ -36,14 +36,15 @@ PREAPPROACH_Y_MAX  = 0.5   # 横向偏移 ≤ 0.5m
 PREAPPROACH_TH_MAX = 0.8   # 朝向偏差 ≤ ±46°
 
 # |y| 或 |θ| 超过此阈值时自动启用两阶段规划
-TWO_STAGE_Y_THRESH  = 0.8  # m
+# TWO_STAGE_Y_THRESH 应等于 PREAPPROACH_Y_MAX：超出预定位区才需要 K-turn 预定位
+TWO_STAGE_Y_THRESH  = 0.5  # m（= PREAPPROACH_Y_MAX；y∈(0.5,0.8m) 走两阶段而非慢速直接A*）
 TWO_STAGE_TH_THRESH = 0.7  # rad ≈ 40°
 
 # Python A* 可规划的最大横向偏移（超出后直接返回 IMPOSSIBLE+说明）
 # 原因：|y| > 0.8m 时需要多次 K-turn，Python A* 需要 20s+ 才能求解或直接失败。
 # 说明：本规划器仅设计用于"最终对准"阶段（final approach）。
 #       全局仓库导航（|y| 大偏移）应由 Isaac Lab 或 ROS Nav2 处理。
-MAX_PLANNABLE_Y = 0.8  # m（与 TWO_STAGE_Y_THRESH 保持一致）
+MAX_PLANNABLE_Y = 0.8  # m（硬上限；TWO_STAGE_Y_THRESH < MAX_PLANNABLE_Y 构成三区架构）
 
 def init_primitives():
     """前向积分预推演 30 种运动基元，并将相对坐标增量与相对角度的正余弦值进行缓存"""
@@ -286,6 +287,9 @@ def plan_path(x0, y0, theta0, precomp_prim,
                     # 记录 A* 实际命中目标时的位姿（mid-primitive 截断点）
                     # 供两阶段规划的 Stage-2 使用，避免 primitive 末端越界问题
                     stats['goal_pos'] = (nx, ny, nth)
+                    # 命中目标时位于当前 primitive 的第 step_hit 步（1-based）
+                    # 用于测试/回放时截断最后一段，避免“末段过冲”假碰撞。
+                    stats['goal_step_hit'] = step_hit
                 return True, final_path, None
                 
             # 计算 Cost 计分
@@ -328,25 +332,27 @@ def plan_path(x0, y0, theta0, precomp_prim,
                     h = rs_dist / 0.25  # max forward speed = 0.25 m/s
                     h_weight = 1.0
                 else:
-                    # 原有手工几何启发式（保留用于对比）
+                    # 几何启发式：各系数经实测校准使 h ≈ 实际代价
                     dx_h = nx - 2.25 if nx > 2.25 else 0.0
                     abs_ny = ny if ny > 0 else -ny
                     dy_h = abs_ny - 0.18 if abs_ny > 0.18 else 0.0
                     abs_nth = nth if nth > 0 else -nth
                     dth_h = abs_nth - ALIGN_GOAL_DYAW if abs_nth > ALIGN_GOAL_DYAW else 0.0
 
-                    room_needed = 2.10 + dy_h * 2.5 + dth_h * 1.5
+                    # room_needed：完成侧向对齐至少需要的 x-空间
+                    room_needed = 2.10 + dy_h * 3.0 + dth_h * 2.0
                     if room_needed > 2.95:
                         room_needed = 2.95
 
                     back_up_penalty = 0.0
                     if nx < room_needed and (dy_h > 0.05 or dth_h > 0.05):
-                        # 系数从 8.0 降为 2.0，并 cap 到 2.0s，
-                        # 防止贴墙起点（x≈1.92）被大幅过估而导致 A* 失败
-                        back_up_penalty = min((room_needed - nx) * 2.0, 2.0)
+                        # 系数由 2.0→5.0（≈1/v_reverse），cap 由 2.0→6.0
+                        # 令 h 更接近"需要倒退距离/速度"的真实代价
+                        back_up_penalty = min((room_needed - nx) * 5.0, 6.0)
 
-                    h = dx_h * 4.0 + dy_h * 8.0 + dth_h * 4.0 + back_up_penalty
-                    h_weight = 1.2  # 降低权重，减少过估计风险
+                    # dy 系数 8→16，dth 系数 4→6，使 h 更逼近实际代价
+                    h = dx_h * 4.0 + dy_h * 16.0 + dth_h * 6.0 + back_up_penalty
+                    h_weight = 1.0  # 已足够准确，不需再加权放大
                 # ===================
                 tiebreaker += 1
                 heapq.heappush(q, (
@@ -391,80 +397,127 @@ def _replay_to_end(x0, y0, theta0, acts, precomp_prim):
 
 def _k_turn_preposition(x0, y0, theta0, precomp_prim, no_corridor=False):
     """
-    确定性 K-turn 预定位：通过贪心选择基元减少横向偏移 |y|。
+    确定性 K-turn 预定位（三阶段）：
+      Phase-1   安全减 y：两步前瞻贪心，x 硬下限 X_FLOOR_SAFE=2.05m。
+      Phase-1b  紧急减 y：一步贪心，x 硬下限 X_FLOOR_EMG=1.92m（仅在 y 仍大时触发）。
+      Phase-2   x 恢复  ：倒退使 x >= PREAPPROACH_X_MIN=2.2m。
     不依赖 A*，总是在毫秒内完成。
-
-    策略：每一步从所有基元中选择"使 |y| 减小最多"的那个，
-    直到 |y| ≤ PREAPPROACH_Y_MAX 且 x ≥ PREAPPROACH_X_MIN。
-
     返回: (ok, actions, final_x, final_y, final_theta)
     """
     cx, cy, cth = x0, y0, theta0
     acts = []
-    pmap = {p[0]: p[2] for p in precomp_prim}
-    MAX_ITERS = 80   # 最多 80 个基元（约 26s 运行时间）
+    X_FLOOR_SAFE = 2.05   # 安全区：Stage-2 在 x>=2.05 时可解
+    X_FLOOR_EMG  = 1.92   # 紧急区：最低不触墙
 
-    for _ in range(MAX_ITERS):
-        # 检查是否已满足预接近区条件
-        if (abs(cy) <= PREAPPROACH_Y_MAX
+    def _apply(px, py, pth, traj, x_floor=None):
+        cos_t, sin_t = math.cos(pth), math.sin(pth)
+        ex = ey = eth = 0.0
+        for dx, dy, dth, cdth, sdth in traj:
+            ex = px + dx * cos_t - dy * sin_t
+            ey = py + dx * sin_t + dy * cos_t
+            eth = pth + dth
+            if eth > M_PI:   eth -= PI2
+            elif eth <= -M_PI: eth += PI2
+            if x_floor is not None and ex < x_floor:
+                return False, px, py, pth
+            sin_nth = sin_t * cdth + cos_t * sdth
+            valid, _ = check_collision(ex, ey, eth, sin_nth, no_corridor=no_corridor)
+            if not valid:
+                return False, px, py, pth
+        return True, ex, ey, eth
+
+    def _score_y(ex, ey, eth, w_x=1.0):
+        y_over = max(0.0, abs(ey) - PREAPPROACH_Y_MAX) * 4.0
+        y_raw  = abs(ey) * 0.15
+        x_pen  = max(0.0, PREAPPROACH_X_MIN - ex) * w_x
+        th_pen = max(0.0, abs(eth) - PREAPPROACH_TH_MAX) * 0.3
+        return y_over + y_raw + x_pen + th_pen
+
+    def _check_goal():
+        return (abs(cy) <= PREAPPROACH_Y_MAX
                 and PREAPPROACH_X_MIN <= cx <= PREAPPROACH_X_MAX
-                and abs(cth) <= PREAPPROACH_TH_MAX):
+                and abs(cth) <= PREAPPROACH_TH_MAX)
+
+    # ── Phase-1：安全减 y（两步前瞻，x >= X_FLOOR_SAFE） ─────────────
+    best_abs_y  = abs(cy)
+    stagnate_p1 = 0
+    for _ in range(40):
+        if _check_goal():
             return True, acts, cx, cy, cth
-
-        best_act = None
+        lookahead_2 = abs(cy) > PREAPPROACH_Y_MAX + 0.06
+        best_first = best_state = None
         best_score = float('inf')
-
-        for act, N, traj in precomp_prim:
-            cos_t, sin_t = math.cos(cth), math.sin(cth)
-            ok = True
-            for dx, dy, dth, cdth, sdth in traj:
-                nx = cx + dx * cos_t - dy * sin_t
-                ny = cy + dx * sin_t + dy * cos_t
-                nth = cth + dth
-                if nth > M_PI:  nth -= PI2
-                elif nth <= -M_PI: nth += PI2
-                sin_nth = sin_t * cdth + cos_t * sdth
-                valid, _ = check_collision(nx, ny, nth, sin_nth, no_corridor=no_corridor)
-                if not valid:
-                    ok = False
-                    break
-            if not ok:
+        for act1, _n1, traj1 in precomp_prim:
+            ok1, ex1, ey1, eth1 = _apply(cx, cy, cth, traj1, X_FLOOR_SAFE)
+            if not ok1:
                 continue
+            if lookahead_2:
+                local = float('inf')
+                for _a2, _n2, traj2 in precomp_prim:
+                    ok2, ex2, ey2, eth2 = _apply(ex1, ey1, eth1, traj2, X_FLOOR_SAFE)
+                    if ok2:
+                        s2 = _score_y(ex2, ey2, eth2)
+                        if s2 < local: local = s2
+                cand = local if local < float('inf') else _score_y(ex1, ey1, eth1)
+            else:
+                cand = _score_y(ex1, ey1, eth1)
+            if cand < best_score:
+                best_score = cand; best_first = act1; best_state = (ex1, ey1, eth1)
+        if best_first is None:
+            break
+        cx, cy, cth = best_state; acts.append(best_first)
+        if abs(cy) < best_abs_y - 1e-3:
+            best_abs_y = abs(cy); stagnate_p1 = 0
+        else:
+            stagnate_p1 += 1
+            if stagnate_p1 >= 8:
+                break
 
-            # 评分：以最终 |y| + 偏离预接近区 x 范围的惩罚 为贪心目标
-            ddx, ddy, ddth = traj[-1][0], traj[-1][1], traj[-1][2]
-            ex = cx + ddx * cos_t - ddy * sin_t
-            ey = cy + ddx * sin_t + ddy * cos_t
-            eth = cth + ddth
-            x_penalty = max(0.0, PREAPPROACH_X_MIN - ex) * 2.0
-            score = abs(ey) + x_penalty
+    # ── Phase-1b：紧急减 y（一步贪心，x >= X_FLOOR_EMG，仅当 y 仍大时） ─
+    if abs(cy) > PREAPPROACH_Y_MAX + 0.05:
+        best_abs_y = abs(cy); stagnate_emg = 0
+        for _ in range(25):
+            if _check_goal():
+                return True, acts, cx, cy, cth
+            best_first = best_state = None; best_score = float('inf')
+            for act1, _n1, traj1 in precomp_prim:
+                ok1, ex1, ey1, eth1 = _apply(cx, cy, cth, traj1, X_FLOOR_EMG)
+                if not ok1: continue
+                cand = _score_y(ex1, ey1, eth1, w_x=0.5)   # x 惩罚减半，放宽向墙推进
+                if cand < best_score:
+                    best_score = cand; best_first = act1; best_state = (ex1, ey1, eth1)
+            if best_first is None:
+                break
+            cx, cy, cth = best_state; acts.append(best_first)
+            if abs(cy) < best_abs_y - 1e-3:
+                best_abs_y = abs(cy); stagnate_emg = 0
+            else:
+                stagnate_emg += 1
+                if stagnate_emg >= 8:
+                    break
 
-            if score < best_score:
-                best_score = score
-                best_act = act
+    # ── Phase-2：x 恢复——倒退使 x >= PREAPPROACH_X_MIN ──────────────────
+    for _ in range(30):
+        if cx >= PREAPPROACH_X_MIN:
+            break
+        best_rev = best_rev_st = None; best_rv = float('inf')
+        for act, _n, traj in precomp_prim:
+            if act[0] != 'R': continue
+            ok_r, ex_r, ey_r, eth_r = _apply(cx, cy, cth, traj)
+            if not ok_r: continue
+            x_lack = max(0.0, PREAPPROACH_X_MIN - ex_r) * 3.0
+            dy_pen = abs(abs(ey_r) - abs(cy)) * 2.0
+            th_pen = max(0.0, abs(eth_r) - PREAPPROACH_TH_MAX) * 0.3
+            rv = x_lack + dy_pen + th_pen
+            if rv < best_rv:
+                best_rv = rv; best_rev = act; best_rev_st = (ex_r, ey_r, eth_r)
+        if best_rev is None: break
+        cx, cy, cth = best_rev_st; acts.append(best_rev)
 
-        if best_act is None:
-            break   # 所有基元都碰墙，停止
-
-        # 应用最佳基元
-        seg = pmap[best_act]
-        cos_t, sin_t = math.cos(cth), math.sin(cth)
-        ddx, ddy, ddth = seg[-1][0], seg[-1][1], seg[-1][2]
-        cx = cx + ddx * cos_t - ddy * sin_t
-        cy = cy + ddx * sin_t + ddy * cos_t
-        cth = cth + ddth
-        if cth > M_PI:  cth -= PI2
-        elif cth <= -M_PI: cth += PI2
-        acts.append(best_act)
-
-    # 最后检查一次目标条件（可能已满足但退出循环了）
-    if (abs(cy) <= PREAPPROACH_Y_MAX
-            and PREAPPROACH_X_MIN <= cx <= PREAPPROACH_X_MAX
-            and abs(cth) <= PREAPPROACH_TH_MAX):
+    # ── 最终检查 ─────────────────────────────────────────────────────────
+    if _check_goal():
         return True, acts, cx, cy, cth
-
     return False, acts, cx, cy, cth
-
 
 def plan_path_robust(x0, y0, theta0, precomp_prim,
                      use_rs=False, stats=None, no_corridor=False):
@@ -499,16 +552,65 @@ def plan_path_robust(x0, y0, theta0, precomp_prim,
                          use_rs=use_rs, stats=stats,
                          no_corridor=no_corridor)
 
-    # ── Stage-1：确定性贪心 K-turn 预定位 ────────────────────────────
+    # ── Stage-1：预定位（y 大偏差优先用 A*，θ 大偏差用贪心）────────────────
     import time as _time
     t1 = _time.perf_counter()
-    ok1, acts1, mx, my, mth = _k_turn_preposition(
-        x0, y0, theta0, precomp_prim, no_corridor=no_corridor)
+    ok1 = False
+    acts1 = []
+    mx, my, mth = x0, y0, theta0
+    stage1_mode = 'none'
+    stage1_goal_step_hit = None
+
+    # y 偏差超出预接近区时，优先使用 Stage-1 A* 进入 pre-approach zone。
+    # 这能避免贪心失败后回退到慢速单阶段 A*（7~12s）。
+    if abs(y0) > PREAPPROACH_Y_MAX:
+        st1 = {}
+        ok1, acts1, _ = plan_path(
+            x0, y0, theta0, precomp_prim,
+            use_rs=False,
+            stats=st1,
+            no_corridor=no_corridor,
+            _goal_xmin=PREAPPROACH_X_MIN,
+            _goal_xmax=PREAPPROACH_X_MAX,
+            _goal_yhalf=PREAPPROACH_Y_MAX,
+            _goal_thmax=PREAPPROACH_TH_MAX,
+            # 仅做“快速预接近”尝试；超时后立刻走贪心兜底，避免 Stage-1 自身变慢。
+            _step_limit=700,
+            _expand_limit=12000,
+            _prim_limit=18,
+            _rs_expand=False,
+            _heuristic_preapproach=True
+        )
+        if ok1:
+            goal_pos = st1.get('goal_pos')
+            stage1_goal_step_hit = st1.get('goal_step_hit')
+            if goal_pos is not None:
+                mx, my, mth = goal_pos
+            else:
+                mx, my, mth = _replay_to_end(x0, y0, theta0, acts1, precomp_prim)
+            stage1_mode = 'astar_preapproach'
+
+    # A* 预接近失败或 θ-only 大偏差时，使用贪心 K-turn 兜底。
+    if not ok1:
+        ok1, acts1, mx, my, mth = _k_turn_preposition(
+            x0, y0, theta0, precomp_prim, no_corridor=no_corridor)
+        if ok1:
+            stage1_mode = 'greedy_kturn'
+        else:
+            # 贪心已显著改善但未达硬阈值时，允许进入 Stage-2 继续精对准，
+            # 避免回退到慢速单阶段 Direct A*。
+            # 阈值松绑：+0.15（Stage-2 新启发函数可处理 y≤0.65 的情况）
+            improved_enough = (abs(my) <= PREAPPROACH_Y_MAX + 0.15 and
+                               abs(my) <= abs(y0) - 0.08 and
+                               mx >= 2.0)
+            if improved_enough and acts1:
+                ok1 = True
+                stage1_mode = 'greedy_kturn_partial'
+
     t1_ms = round((_time.perf_counter() - t1) * 1000.0, 1)
 
     if not ok1:
-        # Stage-1 失败（大偏航角时触发，理论上极少）→ 回退单阶段
-        # 注意：大 y 情况已在前面被 MAX_PLANNABLE_Y 截断，不会走到这里
+        # Stage-1 全部失败：回退单阶段（保留成功机会）
         return plan_path(x0, y0, theta0, precomp_prim,
                          use_rs=use_rs, stats=stats,
                          no_corridor=no_corridor)
@@ -536,7 +638,12 @@ def plan_path_robust(x0, y0, theta0, precomp_prim,
             stats['stage2_acts'] = len(acts2 or [])
             stats['stage1_ms']   = t1_ms
             stats['stage2_ms']   = st2.get('elapsed_ms', 0)
+            stats['stage1_mode'] = stage1_mode
             stats['stage1_end']  = (mx, my, mth)
+            stats['stage1_goal_step_hit'] = stage1_goal_step_hit
+            # Stage-2 精确命中目标的位姿（A* mid-primitive 截断点，比完整 replay 更准确）
+            stats['goal_pos']    = st2.get('goal_pos')
+            stats['goal_step_hit'] = st2.get('goal_step_hit')
         return True, (acts1 or []) + (acts2 or []), rs_traj
 
     # Stage-2 失败 → 直接单阶段兜底
