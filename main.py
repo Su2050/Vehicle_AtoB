@@ -316,12 +316,13 @@ def plan_path(x0, y0, theta0, precomp_prim,
                 
                 # ==== Heuristic ====
                 if _heuristic_preapproach:
-                    # Stage-1 专用启发：同时惩罚横向偏移和 x 越出目标区
-                    # x < _goal_xmin 说明需要倒退（完成 K-turn 返程），额外惩罚
+                    # Stage-1 专用启发：同时惩罚横向偏移、x 越界、角度偏离
                     abs_ny = ny if ny >= 0 else -ny
                     h_y = max(0.0, abs_ny - _goal_yhalf) * 5.0
                     h_x = max(0.0, _goal_xmin - nx) * 3.0  # 鼓励从墙边退回
-                    h = h_y + h_x
+                    abs_nth = nth if nth >= 0 else -nth
+                    h_th = max(0.0, abs_nth - _goal_thmax) * 3.0
+                    h = h_y + h_x + h_th
                     h_weight = 1.0
                 elif use_rs:
                     # RS 距离（米）除以最大速度（0.25 m/s）换算为时间下界（秒）
@@ -442,6 +443,29 @@ def _k_turn_preposition(x0, y0, theta0, precomp_prim, no_corridor=False):
         return (abs(cy) <= PREAPPROACH_Y_MAX
                 and PREAPPROACH_X_MIN <= cx <= PREAPPROACH_X_MAX
                 and abs(cth) <= PREAPPROACH_TH_MAX)
+
+    # ── Phase-0：如果横向偏差极大且距离墙太近，强制倒车拉开空间并打方向 ──
+    needed_x_init = 2.2 + abs(y0) * 1.5
+    needed_x_init = min(needed_x_init, PREAPPROACH_X_MAX - 1.0)
+    if cx < needed_x_init and abs(cy) > 1.0:
+        for _ in range(40):
+            if cx >= needed_x_init: break
+            best_p0 = None
+            best_s0 = float('inf')
+            for act0, _n0, traj0 in precomp_prim:
+                if act0[0] != 'R': continue
+                ok0, ex0, ey0, eth0 = _apply(cx, cy, cth, traj0)
+                if not ok0: continue
+                # 倒退时需要配合打死方向盘：在右边(cy<0)期待负向，左边期待正向
+                target_th = -1.5 if cy < 0 else 1.5
+                th_pen = abs(eth0 - target_th) * 5.0
+                if th_pen < best_s0:
+                    best_s0 = th_pen
+                    best_p0 = act0
+                    best_st0 = (ex0, ey0, eth0)
+            if best_p0 is None: break
+            cx, cy, cth = best_st0
+            acts.append(best_p0)
 
     # ── Phase-1：安全减 y（两步前瞻，x >= X_FLOOR_SAFE） ─────────────
     best_abs_y  = abs(cy)
