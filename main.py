@@ -81,14 +81,45 @@ def init_primitives():
                 
     return precomp_prim
 
-def check_collision(nx, ny, nth, sin_nth=None, no_corridor=False):
+def check_collision(nx, ny, nth, sin_nth=None, no_corridor=False, obstacles=None):
     """
     检查状态是否合法
     返回: (is_valid, reason)
-    reason: 'OK', 'CORRIDOR'
+    reason: 'OK', 'CORRIDOR', 'OBSTACLE'
 
     no_corridor=True 时跳过安全走廊约束。
+    obstacles: 可选障碍物列表，格式为 [{"x": x, "y": y, "w": w, "h": h}, ...]
     """
+    # 用户定义的矩形障碍物碰撞检测（叉车模型简化为一个点或一个包围盒）
+    # 为简单起见，如果障碍物只给矩形，我们用点(nx, ny)或加上安全半径检测
+    # 假设叉车是个点，加上一定膨胀，这里我们先实现最基本的点是否在矩形内。
+    # 为了更准确，我们可以检查叉车中心是否在障碍物扩展后的多边形内
+    if obstacles:
+        # 叉车近似为一个半径为 0.5m 的圆（或者你可以根据具体需要调整）
+        forklift_radius = 0.5
+        for obs in obstacles:
+            ox, oy, ow, oh = obs['x'], obs['y'], obs['w'], obs['h']
+            # 矩形的中心是 ox + ow/2, oy + oh/2（如果是左上角或左下角坐标）
+            # 假设 x, y 是左上角，往下（或往右）是正方向
+            # 最简单的检测：点 (nx, ny) 距离矩形 < forklift_radius
+            
+            # 计算点(nx, ny)到矩形的最近距离
+            dx = max(ox - nx, 0, nx - (ox + ow))
+            dy = max(oy - ny, 0, ny - (oy + oh))
+            
+            # 假设我们的坐标系：ox, oy 可能是左下角，也可能是任意形式
+            # 无论如何，我们采用 axis-aligned bounding box (AABB) 碰撞
+            # 但要注意：viz.py 中绘制障碍物时，可能 (x, y) 是鼠标起点，w, h 是宽高
+            # 这里的坐标可能需要转换。如果假定是标准笛卡尔系：
+            min_x, max_x = min(ox, ox + ow), max(ox, ox + ow)
+            min_y, max_y = min(oy, oy + oh), max(oy, oy + oh)
+            
+            dx = max(min_x - nx, 0, nx - max_x)
+            dy = max(min_y - ny, 0, ny - max_y)
+            
+            if dx * dx + dy * dy < forklift_radius * forklift_radius:
+                return False, 'OBSTACLE'
+
     # 安全走廊门控 (safe_corridor) —— 可选关闭
     if not no_corridor and nx <= 2.05:
         if sin_nth is None:
@@ -100,10 +131,10 @@ def check_collision(nx, ny, nth, sin_nth=None, no_corridor=False):
 
     return True, 'OK'
 
-def _check_traj_collision(traj, no_corridor=False):
+def _check_traj_collision(traj, no_corridor=False, obstacles=None):
     """对一组轨迹点 [(x,y,th),...] 逐点做碰撞检测，全通过返回 True"""
     for x, y, th in traj:
-        is_valid, _ = check_collision(x, y, th, no_corridor=no_corridor)
+        is_valid, _ = check_collision(x, y, th, no_corridor=no_corridor, obstacles=obstacles)
         if not is_valid:
             return False
     return True
@@ -118,7 +149,8 @@ def plan_path(x0, y0, theta0, precomp_prim,
               _step_limit=1079, _expand_limit=150000, _prim_limit=30,
               _rs_expand=True,
               # Stage-1 专用简单启发函数（仅惩罚横向偏移）
-              _heuristic_preapproach=False):
+              _heuristic_preapproach=False,
+              obstacles=None):
     """
     执行 A* 搜索
 
@@ -254,7 +286,7 @@ def plan_path(x0, y0, theta0, precomp_prim,
                 sin_nth = sin_th * cdth + cos_th * sdth
                 
                 is_valid, _ = check_collision(nx, ny, nth, sin_nth,
-                                              no_corridor=no_corridor)
+                                              no_corridor=no_corridor, obstacles=obstacles)
                 if not is_valid:
                     ok = False
                     break
@@ -411,7 +443,7 @@ def _replay_to_end(x0, y0, theta0, acts, precomp_prim):
     return cx, cy, cth
 
 
-def _k_turn_preposition(x0, y0, theta0, precomp_prim, no_corridor=False):
+def _k_turn_preposition(x0, y0, theta0, precomp_prim, no_corridor=False, obstacles=None):
     """
     确定性 K-turn 预定位（三阶段）：
       Phase-1   安全减 y：两步前瞻贪心，x 硬下限 X_FLOOR_SAFE=2.05m。
@@ -437,7 +469,7 @@ def _k_turn_preposition(x0, y0, theta0, precomp_prim, no_corridor=False):
             if x_floor is not None and ex < x_floor:
                 return False, px, py, pth
             sin_nth = sin_t * cdth + cos_t * sdth
-            valid, _ = check_collision(ex, ey, eth, sin_nth, no_corridor=no_corridor)
+            valid, _ = check_collision(ex, ey, eth, sin_nth, no_corridor=no_corridor, obstacles=obstacles)
             if not valid:
                 return False, px, py, pth
         return True, ex, ey, eth
@@ -612,7 +644,8 @@ def _k_turn_preposition(x0, y0, theta0, precomp_prim, no_corridor=False):
 
 def plan_path_robust(x0, y0, theta0, precomp_prim,
                      use_rs=False, stats=None, no_corridor=False,
-                     rs_expansion_radius=RS_EXPANSION_RADIUS):
+                     rs_expansion_radius=RS_EXPANSION_RADIUS,
+                     obstacles=None):
     """
     鲁棒两阶段规划器：自动处理大侧偏 / 大偏航起点。
 
@@ -648,7 +681,8 @@ def plan_path_robust(x0, y0, theta0, precomp_prim,
         return plan_path(x0, y0, theta0, precomp_prim,
                          use_rs=use_rs, stats=stats,
                          no_corridor=no_corridor,
-                         rs_expansion_radius=rs_expansion_radius)
+                         rs_expansion_radius=rs_expansion_radius,
+                         obstacles=obstacles)
 
     import time as _time
     import math as _math
@@ -691,7 +725,7 @@ def plan_path_robust(x0, y0, theta0, precomp_prim,
                     
                     sin_nth = sin_t * cdth + cos_t * sdth
                     # 保持和传入参数一致的碰撞检测，避免把车开进走廊但处于非法姿态
-                    valid, _ = check_collision(ex, ey, eth, sin_nth, no_corridor=no_corridor)
+                    valid, _ = check_collision(ex, ey, eth, sin_nth, no_corridor=no_corridor, obstacles=obstacles)
                     if not valid:
                         ok = False
                         break
@@ -799,7 +833,8 @@ def plan_path_robust(x0, y0, theta0, precomp_prim,
                 _expand_limit=expand_limit_st1,
                 _prim_limit=prim_limit_st1,
                 _rs_expand=False,
-                _heuristic_preapproach=True
+                _heuristic_preapproach=True,
+                obstacles=obstacles
             )
             if ok1:
                 goal_pos = st1.get('goal_pos')
@@ -818,7 +853,7 @@ def plan_path_robust(x0, y0, theta0, precomp_prim,
     # A* 预接近失败或 θ-only 大偏差时，使用贪心 K-turn 兜底。
     if not ok1:
         ok1, acts1_greedy, mx2, my2, mth2 = _k_turn_preposition(
-            mx, my, mth, precomp_prim, no_corridor=no_corridor)
+            mx, my, mth, precomp_prim, no_corridor=no_corridor, obstacles=obstacles)
         if ok1:
             stage1_mode = 'greedy_kturn'
             acts1 = acts1_greedy
@@ -853,7 +888,8 @@ def plan_path_robust(x0, y0, theta0, precomp_prim,
         ok_fallback, acts_fallback, traj_fallback = plan_path(x0, y0, theta0, precomp_prim,
                                                               use_rs=use_rs, stats=st_fallback,
                                                               no_corridor=no_corridor,
-                                                              rs_expansion_radius=rs_expansion_radius)
+                                                              rs_expansion_radius=rs_expansion_radius,
+                                                              obstacles=obstacles)
         if ok_fallback:
             if stats is not None:
                 for k, v in st_fallback.items():
@@ -868,7 +904,8 @@ def plan_path_robust(x0, y0, theta0, precomp_prim,
         use_rs=use_rs,
         stats=st2,
         no_corridor=no_corridor,
-        rs_expansion_radius=rs_expansion_radius
+        rs_expansion_radius=rs_expansion_radius,
+        obstacles=obstacles
     )
 
     total_ms = round((time.perf_counter() - t_robust) * 1000.0, 1)
@@ -898,7 +935,8 @@ def plan_path_robust(x0, y0, theta0, precomp_prim,
     return plan_path(x0, y0, theta0, precomp_prim,
                      use_rs=use_rs, stats=stats,
                      no_corridor=no_corridor,
-                     rs_expansion_radius=rs_expansion_radius)
+                     rs_expansion_radius=rs_expansion_radius,
+                     obstacles=obstacles)
 
 
 def simulate_path(x0, y0, theta0, actions, precomp_prim):
@@ -943,7 +981,7 @@ def simulate_path(x0, y0, theta0, actions, precomp_prim):
         
     return trajectory
 
-def plan_path_pure_rs(x0, y0, theta0, no_corridor=False, stats=None):
+def plan_path_pure_rs(x0, y0, theta0, no_corridor=False, stats=None, obstacles=None):
     """
     纯 RS 模式规划（用于调试）：
     直接从起点计算一条前往目标的 RS 曲线，并进行碰撞检测。
@@ -971,7 +1009,7 @@ def plan_path_pure_rs(x0, y0, theta0, no_corridor=False, stats=None):
         return False, [], None
         
     # 碰撞检测（含边界和走廊）
-    ok = _check_traj_collision(rs_traj, no_corridor)
+    ok = _check_traj_collision(rs_traj, no_corridor, obstacles=obstacles)
     
     if stats is not None:
         stats['elapsed_ms'] = round((time.perf_counter() - t_start) * 1000.0, 1)

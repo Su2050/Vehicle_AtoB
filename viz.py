@@ -138,6 +138,12 @@ class App:
         self.move_speed = 0.8   # m/s
         self.rot_speed = 2.0    # rad/s
         self.dragging = False
+        
+        # User defined obstacles
+        self.obstacles = [] # [{'x': x, 'y': y, 'w': w, 'h': h}]
+        self.drawing_obs = False
+        self.obs_start_pt = None
+        self.obs_current_pt = None
 
     # ── main loop ──────────────────────────────────────────────
     def run(self):
@@ -156,6 +162,9 @@ class App:
 
     # ── input ──────────────────────────────────────────────────
     def _event(self, ev):
+        mods = pygame.key.get_mods()
+        shift_pressed = (mods & pygame.KMOD_SHIFT) != 0
+
         if ev.type == pygame.KEYDOWN:
             if ev.key == pygame.K_r:
                 self._reset()
@@ -183,23 +192,50 @@ class App:
             elif ev.key == pygame.K_p:
                 if _SMOOTH_AVAILABLE and self.path:
                     self.use_smooth = not self.use_smooth
+            elif ev.key == pygame.K_x:
+                self.obstacles = []
+                self.msg = "Obstacles cleared"
+                self.msg_color = COL_TEXT
 
         if self.planning or self.animating:
             return
 
         if ev.type == pygame.MOUSEBUTTONDOWN and ev.button == 1:
             wx, wy = self.trans.s2w(*ev.pos)
-            if VIEW_X_MIN <= wx <= VIEW_X_MAX and VIEW_Y_MIN <= wy <= VIEW_Y_MAX:
+            if shift_pressed:
+                self.drawing_obs = True
+                self.obs_start_pt = (wx, wy)
+                self.obs_current_pt = (wx, wy)
+            elif VIEW_X_MIN <= wx <= VIEW_X_MAX and VIEW_Y_MIN <= wy <= VIEW_Y_MAX:
                 self.sx, self.sy = wx, wy
                 self.path = []
+                self.smooth_path = []
+                self.rs_traj = []
                 self.finished = False
                 self.dragging = True
+                self.msg = ""
+                self.last_stats = {}
         elif ev.type == pygame.MOUSEBUTTONUP and ev.button == 1:
-            self.dragging = False
-        elif ev.type == pygame.MOUSEMOTION and self.dragging:
+            if self.drawing_obs:
+                self.drawing_obs = False
+                wx, wy = self.trans.s2w(*ev.pos)
+                x1, y1 = self.obs_start_pt
+                # Normalize rect (wx, wy can be any corner relative to start_pt)
+                ox = min(x1, wx)
+                oy = min(y1, wy)
+                ow = abs(wx - x1)
+                oh = abs(wy - y1)
+                if ow > 0.1 and oh > 0.1: # filter out tiny clicks
+                    self.obstacles.append({'x': ox, 'y': oy, 'w': ow, 'h': oh})
+            else:
+                self.dragging = False
+        elif ev.type == pygame.MOUSEMOTION:
             wx, wy = self.trans.s2w(*ev.pos)
-            self.sx = max(VIEW_X_MIN, min(VIEW_X_MAX, wx))
-            self.sy = max(VIEW_Y_MIN, min(VIEW_Y_MAX, wy))
+            if self.drawing_obs:
+                self.obs_current_pt = (wx, wy)
+            elif self.dragging:
+                self.sx = max(VIEW_X_MIN, min(VIEW_X_MAX, wx))
+                self.sy = max(VIEW_Y_MIN, min(VIEW_Y_MAX, wy))
             self.path = []
             self.finished = False
 
@@ -266,7 +302,8 @@ class App:
             ok, acts, rs_traj = main.plan_path_pure_rs(
                 self.sx, self.sy, self.sth,
                 no_corridor=self.no_corridor,
-                stats=st
+                stats=st,
+                obstacles=self.obstacles
             )
         else:
             ok, acts, rs_traj = main.plan_path_robust(
@@ -274,7 +311,8 @@ class App:
                 use_rs=(self.planning_mode == 1),
                 no_corridor=self.no_corridor,
                 stats=st,
-                rs_expansion_radius=self.rs_radius
+                rs_expansion_radius=self.rs_radius,
+                obstacles=self.obstacles
             )
         self.planning = False
         self.last_stats = st
@@ -385,6 +423,7 @@ class App:
         self._draw_canvas_bg()
         self._draw_grid()
         self._draw_corridor()
+        self._draw_obstacles()
         self._draw_goal()
         self._draw_pallet()
         self._draw_labels()
@@ -445,6 +484,30 @@ class App:
                 lbl = self.font.render(f"{wx:.1f}", True, COL_TEXT_DIM)
                 self.screen.blit(lbl, (p1[0] - lbl.get_width() - 6, p1[1] - lbl.get_height() // 2))
             wx += 0.2
+
+    def _draw_obstacles(self):
+        t = self.trans
+        # Draw completed obstacles
+        for obs in self.obstacles:
+            p1 = t.w2s(obs['x'], obs['y'])
+            p2 = t.w2s(obs['x'] + obs['w'], obs['y'] + obs['h'])
+            rect = pygame.Rect(min(p1[0], p2[0]), min(p1[1], p2[1]),
+                               abs(p2[0] - p1[0]), abs(p2[1] - p1[1]))
+            # 绘制带有红色填充和粗边框的矩形障碍物
+            pygame.draw.rect(self.screen, (200, 50, 50, 180), rect)
+            pygame.draw.rect(self.screen, (150, 0, 0), rect, 2)
+            
+        # Draw in-progress obstacle
+        if self.drawing_obs and self.obs_start_pt and self.obs_current_pt:
+            p1 = t.w2s(*self.obs_start_pt)
+            p2 = t.w2s(*self.obs_current_pt)
+            rect = pygame.Rect(min(p1[0], p2[0]), min(p1[1], p2[1]),
+                               abs(p2[0] - p1[0]), abs(p2[1] - p1[1]))
+            # 半透明的红色表示正在绘制
+            s = pygame.Surface((rect.width, rect.height), pygame.SRCALPHA)
+            s.fill((200, 50, 50, 100))
+            self.screen.blit(s, rect)
+            pygame.draw.rect(self.screen, (255, 100, 100), rect, 2)
 
     def _draw_walls(self):
         t = self.trans
@@ -740,8 +803,8 @@ class App:
 
         # ── Right column: key help ────────────────────────────────────
         lines = [
-            "W/S/A/D=Move  Q/E=Rotate  SPACE=Plan  R=Reset",
-            "M=Mode  +/-=Radius  C=Corridor  P=Smooth  Click/Drag=SetPos",
+            "W/S/A/D=Move  Q/E=Rotate  SPACE=Plan  R=Reset  X=ClearObs",
+            "M=Mode  +/-=Radius  C=Corridor  P=Smooth  Click=Pos  Shift+Drag=Obs",
         ]
         for i, line in enumerate(lines):
             s = self.font.render(line, True, COL_TEXT_DIM)
