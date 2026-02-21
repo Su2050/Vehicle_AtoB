@@ -127,7 +127,7 @@ class App:
         self.msg_color = COL_TEXT
 
         # Heuristic / obstacle mode flags
-        self.planning_mode = 0    # M to toggle: 0=Geometric, 1=RS Heur, 2=Pure RS
+        self.planning_mode = 1    # M to toggle: 0=Geometric, 1=RS Heur, 2=Pure RS
         self.rs_radius = 0.8      # +/- to adjust RS expansion radius
         self.no_corridor = False  # C    to toggle: Corridor / No-Corridor
         self.use_smooth = True    # P    to toggle: show smoothed path（默认开启 B 样条平滑）
