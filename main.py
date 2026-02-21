@@ -447,16 +447,20 @@ def _k_turn_preposition(x0, y0, theta0, precomp_prim, no_corridor=False):
         x_pen  = max(0.0, PREAPPROACH_X_MIN - ex) * w_x * 5.0
         
         # 若角度依然偏大，强烈惩罚靠近目标区（防止进入 x 小于 3.0 的死胡同）
-        if abs(eth) > 0.4:
+        # 且仅当车头朝向目标区(eth较小，或者前进时)才惩罚，如果车正背对目标区倒车，应该允许它靠近目标区倒车以获得空间
+        if abs(eth) > 0.4 and (abs(eth) < 1.57 or gear == 'F'):
             x_pen += max(0.0, 3.2 - ex) * w_x * 3.0
             
         # 对 x 的远端惩罚改为温和渐进式，促使它在能够倒进去的前提下尽量选择紧凑弧线
         x_over = max(0.0, ex - 3.2) * 2.0  # 提升：增强远端惩罚
         
-        # 当 y 偏差很大时，允许利用角度实现快速横向移动
-        # 当 y 逐渐进入目标区时，必须强迫车头回正，否则会导致后续 Stage-2 A* 失败
+        # 增加倒车时的引导：如果我们在 y>0 的上方且需要回正(eth=0)，我们倒车时最好 eth 为负，让车头偏向下方，否则会让车头偏向上方，导致偏离
         align_weight = 5.0 if abs(ey) < 1.5 else 0.05
         th_pen = max(0.0, abs(eth) - PREAPPROACH_TH_MAX) * align_weight
+        if ey > 0 and eth > 0 and gear == 'R':
+            th_pen += 2.0 * abs(eth)
+        if ey < 0 and eth < 0 and gear == 'R':
+            th_pen += 2.0 * abs(eth)
         
         # 换挡惩罚下调至2.0，足以防止原地锯齿揉库，又不会不敢换挡
         gear_pen = 0.0 if prev_gear is None or gear == prev_gear else 1.0  # 降低：允许果断换挡
