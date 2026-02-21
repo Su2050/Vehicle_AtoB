@@ -30,10 +30,10 @@ STEER_JUMP_PENALTY  = 0.5  # seconds
 
 # === 两阶段规划参数 ===
 # 第一阶段宽松目标：完成 K-turn 返程后离墙有余量（x≥2.2），Stage-2 才容易求解
-PREAPPROACH_X_MIN  = 2.2   # 确保离墙足够远，Stage-2 启发函数不会过估计
+PREAPPROACH_X_MIN  = 2.45  # 确保离墙足够远，Stage-2 有空间机动
 PREAPPROACH_X_MAX  = 8.0   # 工作区右边界（放宽至 8.0m 允许大倒库空间）
 PREAPPROACH_Y_MAX  = 0.5   # 横向偏移 ≤ 0.5m
-PREAPPROACH_TH_MAX = 0.8   # 朝向偏差 ≤ ±46°
+PREAPPROACH_TH_MAX = 0.35   # 朝向偏差 ≤ ±20°
 
 # |y| 或 |θ| 超过此阈值时自动启用两阶段规划
 # TWO_STAGE_Y_THRESH 应等于 PREAPPROACH_Y_MAX：超出预定位区才需要 K-turn 预定位
@@ -50,11 +50,13 @@ def init_primitives():
     """前向积分预推演 30 种运动基元，并将相对坐标增量与相对角度的正余弦值进行缓存"""
     gears = [('F', 0.25), ('R', -0.20)]
     steers = [-1.0, -0.5, 0.0, 0.5, 1.0]
-    durations = [0.33, 0.50, 0.67]
     
     precomp_prim = []
     for g_name, v in gears:
         for s in steers:
+            durations = [0.33, 0.50, 0.67]
+            if s == 0.0:
+                durations.extend([1.0, 1.5])
             for d in durations:
                 delta = s * MAX_STEER
                 # 依题意强制截断纠正浮点飘移 (例 0.33 / 1/30 ≈ 9.9 -> 10)
@@ -318,9 +320,19 @@ def plan_path(x0, y0, theta0, precomp_prim,
                 if _heuristic_preapproach:
                     # Stage-1 专用启发：同时惩罚横向偏移、x 越界、角度偏离
                     abs_ny = ny if ny >= 0 else -ny
-                    h_y = max(0.0, abs_ny - _goal_yhalf) * 5.0
-                    h_x = max(0.0, _goal_xmin - nx) * 3.0  # 鼓励从墙边退回
                     abs_nth = nth if nth >= 0 else -nth
+                    
+                    # 只有当角度已经较小时，才强力收缩 y；角度较大时，允许 y 在走廊内大幅度摆动以进行揉库对齐
+                    dyn_yhalf = _goal_yhalf if abs_nth <= _goal_thmax + 0.2 else 2.5
+                    h_y = max(0.0, abs_ny - dyn_yhalf) * 5.0
+                    
+                    # 只有当角度已经比较小时，才严格限制 x 不能太大；
+                    # 若角度偏大，说明还需要空间揉库，放宽 x 的上限到 4.0
+                    dyn_xmax = _goal_xmax if abs_nth <= _goal_thmax + 0.2 else 4.0
+                    h_x = max(0.0, _goal_xmin - nx) * 3.0  # 鼓励从墙边退回
+                    if nx > dyn_xmax:
+                        h_x += (nx - dyn_xmax) * 1.5  # 惩罚往外无脑开
+                        
                     h_th = max(0.0, abs_nth - _goal_thmax) * 3.0
                     h = h_y + h_x + h_th
                     h_weight = 1.0
@@ -430,11 +442,22 @@ def _k_turn_preposition(x0, y0, theta0, precomp_prim, no_corridor=False):
 
     def _score_y(ex, ey, eth, gear=None, prev_gear=None, w_x=1.0):
         y_over = max(0.0, abs(ey) - PREAPPROACH_Y_MAX) * 10.0
-        y_raw  = abs(ey) * 1.5  # 提升：更渴望靠近 y=0，缩短路径
+        # 如果 y 已经在比较小的范围内，不用过分强求它趋近于 0，给车身对齐留出容错空间
+        y_raw  = max(0.0, abs(ey) - 0.5) * 1.5
         x_pen  = max(0.0, PREAPPROACH_X_MIN - ex) * w_x * 5.0
+        
+        # 若角度依然偏大，强烈惩罚靠近目标区（防止进入 x 小于 3.0 的死胡同）
+        if abs(eth) > 0.4:
+            x_pen += max(0.0, 3.2 - ex) * w_x * 3.0
+            
         # 对 x 的远端惩罚改为温和渐进式，促使它在能够倒进去的前提下尽量选择紧凑弧线
         x_over = max(0.0, ex - 3.2) * 2.0  # 提升：增强远端惩罚
-        th_pen = max(0.0, abs(eth) - PREAPPROACH_TH_MAX) * 0.05
+        
+        # 当 y 偏差很大时，允许利用角度实现快速横向移动
+        # 当 y 逐渐进入目标区时，必须强迫车头回正，否则会导致后续 Stage-2 A* 失败
+        align_weight = 5.0 if abs(ey) < 1.5 else 0.05
+        th_pen = max(0.0, abs(eth) - PREAPPROACH_TH_MAX) * align_weight
+        
         # 换挡惩罚下调至2.0，足以防止原地锯齿揉库，又不会不敢换挡
         gear_pen = 0.0 if prev_gear is None or gear == prev_gear else 1.0  # 降低：允许果断换挡
         return y_over + y_raw + x_pen + x_over + th_pen + gear_pen
@@ -456,8 +479,14 @@ def _k_turn_preposition(x0, y0, theta0, precomp_prim, no_corridor=False):
                 if act0[0] != 'R': continue
                 ok0, ex0, ey0, eth0 = _apply(cx, cy, cth, traj0)
                 if not ok0: continue
-                # 倒退时需要配合打死方向盘：在右边(cy<0)期待负向，左边期待正向
-                target_th = -1.5 if cy < 0 else 1.5
+                # 如果距离 y=0 很远，我们需要侧向移动，所以倒车时期待车头垂直于走廊 (±1.5)
+                # 如果距离 y=0 已经较近，我们希望它逐渐回正车头 (0.0) 以便 Stage-2 接手
+                if abs(cy) > 1.2:
+                    target_th = -1.5 if cy < 0 else 1.5
+                else:
+                    # 平滑过渡到 0，或者直接给 0
+                    target_th = 0.0
+                
                 th_pen = abs(eth0 - target_th) * 5.0
                 if th_pen < best_s0:
                     best_s0 = th_pen
@@ -572,6 +601,7 @@ def plan_path_robust(x0, y0, theta0, precomp_prim,
       • 若 |y0| ≤ TWO_STAGE_Y_THRESH 且 |θ0| ≤ TWO_STAGE_TH_THRESH
         → 直接调用 plan_path（单阶段，与原来行为完全相同）
       • 否则启动两阶段：
+          Phase-0  掉头预处理：车头背对目标时（|theta| > pi/2），用前进打满方向盘掉头
           Stage-1  确定性 K-turn 预定位（贪心选择基元，毫秒级完成）
           Stage-2  从 Stage-1 终点用标准 plan_path 精准对准托盘
 
@@ -596,67 +626,213 @@ def plan_path_robust(x0, y0, theta0, precomp_prim,
                          use_rs=use_rs, stats=stats,
                          no_corridor=no_corridor)
 
-    # ── Stage-1：预定位（y 大偏差优先用 A*，θ 大偏差用贪心）────────────────
     import time as _time
+    import math as _math
     t1 = _time.perf_counter()
+
+    mx, my, mth = x0, y0, theta0
+    phase0_acts = []
+
+    # 如果用 plan_path_robust 的地方有些情况还是 fallback 失败了，我们看看最基本的参数。
+    # ── Phase-0：车头朝外的掉头预处理 ────────────────────────────────
+    # 当 |theta0| > 150° 时，车头近似背对目标。
+    # 此外，若 |theta0| > 90° 且车头朝向与需要横向移动的方向一致（mth * my < 0），
+    # 则前进会撞墙，后退会偏离目标，此时也需要强制掉头。
+    if abs(mth) > 2.6 or (abs(mth) > 1.57 and mth * my < 0):
+        for _ in range(40):
+            if abs(mth) <= _math.pi / 2:
+                break
+            best_act = None
+            best_st = None
+            best_score = float('inf')
+            
+            # 若接近边界 (x>7.5) 则只考虑倒车，避免撞墙
+            restrict_F = (mx > 7.5)
+            
+            for act, _n, traj in precomp_prim:
+                if restrict_F and act[0] == 'F': continue
+                
+                # 可以前进，也可以后退进行掉头。
+                if abs(act[1]) < 0.5: continue  # 至少需要打半圈方向盘
+                
+                cos_t, sin_t = _math.cos(mth), _math.sin(mth)
+                ok = True
+                ex = ey = eth = 0.0
+                for dx, dy, dth, cdth, sdth in traj:
+                    ex = mx + dx * cos_t - dy * sin_t
+                    ey = my + dx * sin_t + dy * cos_t
+                    eth = mth + dth
+                    if eth > _math.pi: eth -= PI2
+                    elif eth <= -_math.pi: eth += PI2
+                    
+                    sin_nth = sin_t * cdth + cos_t * sdth
+                    # 保持和传入参数一致的碰撞检测，避免把车开进走廊但处于非法姿态
+                    valid, _ = check_collision(ex, ey, eth, sin_nth, no_corridor=no_corridor)
+                    if not valid:
+                        ok = False
+                        break
+                if not ok: continue
+                
+                # 评分：
+                score = abs(eth)
+                # 车头必须转过来，因此给 eth 变化加重
+                # 如果是 R 档，我们要让 eth 在左边(-y)变正或右边(+y)变负
+                if act[0] == 'F':
+                    score += 2.0 * ey * eth
+                else:
+                    score -= 2.0 * ey * eth
+                    score += 1.0  # 微弱惩罚倒车，优先前进掉头
+                    
+                if ex > 6.5:
+                    score += (ex - 6.5) * 5.0
+                score += abs(ey) * 0.5
+                
+                # 我们必须强烈鼓励打方向盘
+                if abs(act[1]) < 0.9:
+                    score += 10.0
+                    
+                # 惩罚使得 ex 减小（我们在 Phase-0 期望是向外开或者退，利用长 x 的空间）
+                # 特别是 F 挡，向外开最好
+                if act[0] == 'F':
+                    score -= ex * 1.5
+                else:
+                    # 同样是为了让它尽快掉头
+                    score += 2.0
+                    
+                # 惩罚 y 绝对值变大，防止在掉头的时候越偏越远
+                score += abs(ey - my) * 2.0
+                
+                # 惩罚短步骤，鼓励直接用长的动作转完
+                score += (1.0 - act[2]) * 2.0
+                
+                # 加大惩罚：如果我们一直在原地揉库
+                score += abs(eth - mth) * 0.5
+                
+                # 不要让它一直贴着下面走，如果我们正在走向墙壁，严重惩罚！
+                if abs(ey) > 2.8:
+                    score += 20.0
+                    
+                # 根据当前的角度，决定最佳的转弯方向。如果是 180 度，两边都可以。
+                # 如果是 135 度，向右转更快。
+                if eth > 0:
+                    if act[0] == 'F' and act[1] > 0:
+                        score += 5.0
+                    if act[0] == 'R' and act[1] < 0:
+                        score += 5.0
+                else:
+                    if act[0] == 'F' and act[1] < 0:
+                        score += 5.0
+                    if act[0] == 'R' and act[1] > 0:
+                        score += 5.0
+
+                if score < best_score:
+                    best_score = score
+                    best_act = act
+                    best_st = (ex, ey, eth)
+            
+            if best_act is None:
+                break # 碰撞，无法继续掉头
+            phase0_acts.append(best_act)
+            mx, my, mth = best_st
+
+    # ── Stage-1：预定位（y 大偏差优先用 A*，θ 大偏差用贪心）────────────────
     ok1 = False
     acts1 = []
-    mx, my, mth = x0, y0, theta0
     stage1_mode = 'none'
     stage1_goal_step_hit = None
 
-    # y 偏差超出预接近区时，优先使用 Stage-1 A* 进入 pre-approach zone。
+    # y 偏差超出预接近区或角度偏差较大时，优先使用 Stage-1 A* 进入 pre-approach zone。
     # 这能避免贪心失败后回退到慢速单阶段 A*（7~12s）。
-    if abs(y0) > PREAPPROACH_Y_MAX:
+    if abs(my) > PREAPPROACH_Y_MAX or phase0_acts or abs(mth) > 0.5:
         st1 = {}
-        ok1, acts1, _ = plan_path(
-            x0, y0, theta0, precomp_prim,
-            use_rs=False,
-            stats=st1,
-            no_corridor=no_corridor,
-            _goal_xmin=PREAPPROACH_X_MIN,
-            _goal_xmax=PREAPPROACH_X_MAX,
-            _goal_yhalf=PREAPPROACH_Y_MAX,
-            _goal_thmax=PREAPPROACH_TH_MAX,
-            # 仅做“快速预接近”尝试；超时后立刻走贪心兜底，避免 Stage-1 自身变慢。
-            _step_limit=700,
-            _expand_limit=12000,
-            _prim_limit=18,
-            _rs_expand=False,
-            _heuristic_preapproach=True
-        )
-        if ok1:
-            goal_pos = st1.get('goal_pos')
-            stage1_goal_step_hit = st1.get('goal_step_hit')
-            if goal_pos is not None:
-                mx, my, mth = goal_pos
-            else:
-                mx, my, mth = _replay_to_end(x0, y0, theta0, acts1, precomp_prim)
-            stage1_mode = 'astar_preapproach'
+        # 为了让 Phase-0 后的位姿更容易通过 Stage-1 A*，
+        # 在 _heuristic_preapproach 中对 x 和 theta 的要求可以稍微放宽，
+        # 我们用 _step_limit 和 _prim_limit 保证它的运行速度
+        
+        # 提取 Stage-1 时如果起点太远，稍微增加搜索深度
+        prim_limit_st1 = 40 if phase0_acts or abs(mth) > 0.5 else 18
+        # 但是对于原本就不需要 phase0 的用例，尽量保持原来的 A* 参数，以免原来成功的变成失败
+        expand_limit_st1 = 80000 if phase0_acts or abs(mth) > 0.5 else 12000
+        step_limit_st1 = 2000 if phase0_acts or abs(mth) > 0.5 else 700
+        
+        # 修复回归：对于完全不需要 Phase0 且角度很小的情况，直接跳过 Stage-1
+        # 仅在 y 大于一定程度且不极度偏离时才尝试 A* 预接近
+        # 若 |y| > 3.0，A* 非常容易陷入庞大搜索空间失败，不如直接交由贪心预定位兜底
+        if (phase0_acts or abs(my) > 1.2 or abs(mth) > 0.5) and abs(my) <= 3.0:
+            ok1, acts1, _ = plan_path(
+                mx, my, mth, precomp_prim,
+                use_rs=False,
+                stats=st1,
+                no_corridor=no_corridor,
+                _goal_xmin=PREAPPROACH_X_MIN,
+                _goal_xmax=PREAPPROACH_X_MAX,
+                _goal_yhalf=PREAPPROACH_Y_MAX,
+                _goal_thmax=PREAPPROACH_TH_MAX,
+                # Phase-0 后位姿可能离目标较远，适当提高 Stage-1 搜索深度以增加成功率
+                _step_limit=step_limit_st1,
+                _expand_limit=expand_limit_st1,
+                _prim_limit=prim_limit_st1,
+                _rs_expand=False,
+                _heuristic_preapproach=True
+            )
+            if ok1:
+                goal_pos = st1.get('goal_pos')
+                stage1_goal_step_hit = st1.get('goal_step_hit')
+                if goal_pos is not None:
+                    mx, my, mth = goal_pos
+                else:
+                    mx, my, mth = _replay_to_end(mx, my, mth, acts1, precomp_prim)
+                stage1_mode = 'astar_preapproach'
+        else:
+            # 对于不需要 phase0 且 y 偏差也不是极端大的情况，
+            # 我们不需要走放宽条件的 Stage1 A*，而是直接把它交给最后的单阶段/贪心处理，
+            # 这里设置 ok1=False 是为了让它 fallback
+            ok1 = False
 
     # A* 预接近失败或 θ-only 大偏差时，使用贪心 K-turn 兜底。
     if not ok1:
-        ok1, acts1, mx, my, mth = _k_turn_preposition(
-            x0, y0, theta0, precomp_prim, no_corridor=no_corridor)
+        ok1, acts1_greedy, mx2, my2, mth2 = _k_turn_preposition(
+            mx, my, mth, precomp_prim, no_corridor=no_corridor)
         if ok1:
             stage1_mode = 'greedy_kturn'
+            acts1 = acts1_greedy
+            mx, my, mth = mx2, my2, mth2
         else:
             # 贪心已显著改善但未达硬阈值时，允许进入 Stage-2 继续精对准，
             # 避免回退到慢速单阶段 Direct A*。
             # 阈值再次松绑：只要把 y 压进 1.2m，Stage-2 的 A* 也能算出来，且比从头算快
-            improved_enough = (abs(my) <= PREAPPROACH_Y_MAX + 0.8 and
-                               abs(my) <= abs(y0) - 0.08)
-            if improved_enough and acts1:
+            improved_enough = (abs(my2) <= PREAPPROACH_Y_MAX + 0.8 and
+                               abs(my2) <= abs(my) - 0.08 and
+                               abs(mth2) <= 1.2)  # 要求角度也大体对齐
+            if improved_enough and acts1_greedy:
                 ok1 = True
                 stage1_mode = 'greedy_kturn_partial'
+                acts1 = acts1_greedy
+                mx, my, mth = mx2, my2, mth2
 
     t1_ms = round((_time.perf_counter() - t1) * 1000.0, 1)
 
     if not ok1:
-        # Stage-1 全部失败：回退单阶段（保留成功机会）
-        return plan_path(x0, y0, theta0, precomp_prim,
-                         use_rs=use_rs, stats=stats,
+        # Stage-1 全部失败（且贪心也没救回来）：如果经过了 Phase-0，说明情况极度复杂，
+        # 且单阶段 A* 也注定失败。为了避免漫长的必定失败的尝试，我们直接返回失败。
+        # 如果没有 Phase-0，则说明是简单的场景被误判为需要两阶段（如 0度但 y 略大），
+        # 此时可以用单阶段 A* 兜底。
+        if phase0_acts:
+            if stats is not None:
+                stats['two_stage'] = True
+                stats['elapsed_ms'] = t1_ms
+            return False, None, None
+            
+        st_fallback = {}
+        ok_fallback, acts_fallback, traj_fallback = plan_path(x0, y0, theta0, precomp_prim,
+                         use_rs=use_rs, stats=st_fallback,
                          no_corridor=no_corridor)
+        if ok_fallback:
+            if stats is not None:
+                for k, v in st_fallback.items():
+                    stats[k] = v
+                stats['two_stage'] = False
+        return ok_fallback, acts_fallback, traj_fallback
 
     # ── Stage-2：精准对准托盘 ────────────────────────────────────────
     st2 = {}
@@ -670,6 +846,7 @@ def plan_path_robust(x0, y0, theta0, precomp_prim,
     total_ms = round((time.perf_counter() - t_robust) * 1000.0, 1)
 
     if ok2:
+        final_acts = phase0_acts + (acts1 or []) + (acts2 or [])
         if stats is not None:
             stats['expanded']    = st2.get('expanded', 0)
             stats['elapsed_ms']  = total_ms
@@ -677,19 +854,19 @@ def plan_path_robust(x0, y0, theta0, precomp_prim,
             stats['no_corridor'] = no_corridor
             stats['rs_expansion'] = st2.get('rs_expansion', False)
             stats['two_stage']   = True
-            stats['stage1_acts'] = len(acts1 or [])
+            stats['stage1_acts'] = len(acts1 or []) + len(phase0_acts)
             stats['stage2_acts'] = len(acts2 or [])
             stats['stage1_ms']   = t1_ms
             stats['stage2_ms']   = st2.get('elapsed_ms', 0)
-            stats['stage1_mode'] = stage1_mode
+            stats['stage1_mode'] = stage1_mode if not phase0_acts else 'phase0+' + stage1_mode
             stats['stage1_end']  = (mx, my, mth)
             stats['stage1_goal_step_hit'] = stage1_goal_step_hit
             # Stage-2 精确命中目标的位姿（A* mid-primitive 截断点，比完整 replay 更准确）
             stats['goal_pos']    = st2.get('goal_pos')
             stats['goal_step_hit'] = st2.get('goal_step_hit')
-        return True, (acts1 or []) + (acts2 or []), rs_traj
+        return True, final_acts, rs_traj
 
-    # Stage-2 失败 → 直接单阶段兜底
+    # Stage-2 失败 → 直接从 x0 计算单阶段兜底
     return plan_path(x0, y0, theta0, precomp_prim,
                      use_rs=use_rs, stats=stats,
                      no_corridor=no_corridor)

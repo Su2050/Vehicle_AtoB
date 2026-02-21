@@ -16,9 +16,9 @@ FPS = 60
 # x = distance to pallet (small x = close, at top of screen)
 # y = lateral position (left-right on screen)
 VIEW_X_MIN = 1.4
-VIEW_X_MAX = 3.4
-VIEW_Y_MIN = -3.3
-VIEW_Y_MAX = 3.3
+VIEW_X_MAX = 6.0
+VIEW_Y_MIN = -5.0
+VIEW_Y_MAX = 5.0
 
 # Workspace boundaries from main.py
 WALL_X_MIN = 1.92

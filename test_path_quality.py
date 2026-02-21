@@ -28,12 +28,18 @@ import argparse
 import textwrap
 
 # ── 命令行 ────────────────────────────────────────────────────────────────────
-parser = argparse.ArgumentParser()
-parser.add_argument('--verbose', '-v', action='store_true',
-                    help='打印 RS_SAMPLE / RS_EXPAND 详细日志')
-parser.add_argument('--section', choices=['rs', 'plan', 'robust', 'all'],
-                    default='all', help='只运行指定测试板块')
-args = parser.parse_args()
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--verbose', '-v', action='store_true',
+                        help='打印 RS_SAMPLE / RS_EXPAND 详细日志')
+    parser.add_argument('--section', choices=['rs', 'plan', 'robust', 'all'],
+                        default='all', help='只运行指定测试板块')
+    args = parser.parse_args()
+else:
+    class _DummyArgs:
+        verbose = False
+        section = 'none'
+    args = _DummyArgs()
 
 import main
 import rs as rs_mod
@@ -590,24 +596,25 @@ if RUN_ROBUST:
 # ══════════════════════════════════════════════════════════════════════════════
 #  最终汇总
 # ══════════════════════════════════════════════════════════════════════════════
-_hdr('验收结果汇总')
-
-all_sections = passed_sections + failed_sections
-total = len(all_sections)
-passed_n = len(passed_sections)
-
-for name in passed_sections:
-    print(f'  {PASS}  {name}')
-for name in failed_sections:
-    print(f'  {FAIL}  {name}')
-
-print()
-print(f'  总计: {passed_n}/{total} 通过', end='  ')
-if not failed_sections:
-    print('— ALL PASS ✓')
-    sys.exit(0)
-else:
-    print('— SOME FAIL ✗')
+if __name__ == '__main__':
+    _hdr('验收结果汇总')
+    
+    all_sections = passed_sections + failed_sections
+    total = len(all_sections)
+    passed_n = len(passed_sections)
+    
+    for name in passed_sections:
+        print(f'  {PASS}  {name}')
+    for name in failed_sections:
+        print(f'  {FAIL}  {name}')
+    
     print()
-    print('  失败板块:', ', '.join(failed_sections))
-    sys.exit(1)
+    print(f'  总计: {passed_n}/{total} 通过', end='  ')
+    if not failed_sections:
+        print('— ALL PASS ✓')
+        sys.exit(0)
+    else:
+        print('— SOME FAIL ✗')
+        print()
+        print('  失败板块:', ', '.join(failed_sections))
+        sys.exit(1)
