@@ -570,17 +570,19 @@ def _k_turn_preposition(x0, y0, theta0, precomp_prim, no_corridor=False):
     for _ in range(50):
         if _check_goal():
             break
-        if cx >= PREAPPROACH_X_MAX - 1.0:
-            break
+        # if cx >= PREAPPROACH_X_MAX - 1.0:
+        #     break
         best_rev = best_rev_st = None
         prev_gear = acts[-1][0] if acts else None
         best_rv = float('inf')
         for act, _n, traj in precomp_prim:
-            # 允许在极度靠近墙时前进，否则优先倒退
-            if act[0] != 'R' and cx >= X_FLOOR_EMG + 0.5:
-                continue
+            # 允许在极度靠近墙时前进，或者退无可退时前进，否则优先倒退
+            if act[0] != 'R':
+                if X_FLOOR_EMG + 0.5 <= cx < PREAPPROACH_X_MAX - 1.5:
+                    continue
             ok_r, ex_r, ey_r, eth_r = _apply(cx, cy, cth, traj, X_FLOOR_EMG)
             if not ok_r: continue
+            if ex_r >= PREAPPROACH_X_MAX: continue # 不允许退过界
             
             x_lack = max(0.0, PREAPPROACH_X_MIN - ex_r) * 5.0
             y_over = max(0.0, abs(ey_r) - PREAPPROACH_Y_MAX) * 10.0
