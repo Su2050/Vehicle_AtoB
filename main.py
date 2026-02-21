@@ -111,6 +111,7 @@ def _check_traj_collision(traj, no_corridor=False):
 
 def plan_path(x0, y0, theta0, precomp_prim,
               use_rs=False, stats=None, no_corridor=False,
+              rs_expansion_radius=RS_EXPANSION_RADIUS,
               # 可选目标区覆写（供两阶段规划第一阶段使用）
               _goal_xmin=1.92, _goal_xmax=2.25,
               _goal_yhalf=0.18, _goal_thmax=ALIGN_GOAL_DYAW,
@@ -125,6 +126,7 @@ def plan_path(x0, y0, theta0, precomp_prim,
         use_rs       : 若为 True，使用 Reeds-Shepp 距离作为启发函数
         stats        : 可选字典，填充 expanded / elapsed_ms / use_rs / no_corridor 等
         no_corridor  : 若为 True，跳过走廊约束，仅保留硬墙边界
+        rs_expansion_radius: RS 解析扩展距离判定范围
         _goal_x*/_goal_y*/_goal_th* : 目标区参数（两阶段规划 Stage-1 时覆写）
         _step_limit  : 最大 DT 步数（默认 1079）
         _expand_limit: 最大扩展节点数（默认 150000）
@@ -173,12 +175,12 @@ def plan_path(x0, y0, theta0, precomp_prim,
                 RS_GOAL_X, RS_GOAL_Y, RS_GOAL_TH,
                 MIN_TURN_RADIUS
             )
-            if rs_dist_to_goal < RS_EXPANSION_RADIUS:
+            if rs_dist_to_goal < rs_expansion_radius:
                 import sys as _sys
                 print('[RS_EXPAND] node=({:.3f},{:.3f},{:.2f}deg) '
                       'rs_dist={:.3f}m < {:.1f}m → try'.format(
                           cx, cy, math.degrees(cth),
-                          rs_dist_to_goal, RS_EXPANSION_RADIUS),
+                          rs_dist_to_goal, rs_expansion_radius),
                       file=_sys.stderr)
                 rs_traj = rs.rs_sample_path(
                     cx, cy, cth,
@@ -609,7 +611,8 @@ def _k_turn_preposition(x0, y0, theta0, precomp_prim, no_corridor=False):
     return False, acts, cx, cy, cth
 
 def plan_path_robust(x0, y0, theta0, precomp_prim,
-                     use_rs=False, stats=None, no_corridor=False):
+                     use_rs=False, stats=None, no_corridor=False,
+                     rs_expansion_radius=RS_EXPANSION_RADIUS):
     """
     鲁棒两阶段规划器：自动处理大侧偏 / 大偏航起点。
 
@@ -644,7 +647,8 @@ def plan_path_robust(x0, y0, theta0, precomp_prim,
     if not needs_two_stage:
         return plan_path(x0, y0, theta0, precomp_prim,
                          use_rs=use_rs, stats=stats,
-                         no_corridor=no_corridor)
+                         no_corridor=no_corridor,
+                         rs_expansion_radius=rs_expansion_radius)
 
     import time as _time
     import math as _math
@@ -847,8 +851,9 @@ def plan_path_robust(x0, y0, theta0, precomp_prim,
             
         st_fallback = {}
         ok_fallback, acts_fallback, traj_fallback = plan_path(x0, y0, theta0, precomp_prim,
-                         use_rs=use_rs, stats=st_fallback,
-                         no_corridor=no_corridor)
+                                                              use_rs=use_rs, stats=st_fallback,
+                                                              no_corridor=no_corridor,
+                                                              rs_expansion_radius=rs_expansion_radius)
         if ok_fallback:
             if stats is not None:
                 for k, v in st_fallback.items():
@@ -863,6 +868,7 @@ def plan_path_robust(x0, y0, theta0, precomp_prim,
         use_rs=use_rs,
         stats=st2,
         no_corridor=no_corridor,
+        rs_expansion_radius=rs_expansion_radius
     )
 
     total_ms = round((time.perf_counter() - t_robust) * 1000.0, 1)
@@ -891,7 +897,8 @@ def plan_path_robust(x0, y0, theta0, precomp_prim,
     # Stage-2 失败 → 直接从 x0 计算单阶段兜底
     return plan_path(x0, y0, theta0, precomp_prim,
                      use_rs=use_rs, stats=stats,
-                     no_corridor=no_corridor)
+                     no_corridor=no_corridor,
+                     rs_expansion_radius=rs_expansion_radius)
 
 
 def simulate_path(x0, y0, theta0, actions, precomp_prim):
@@ -935,6 +942,46 @@ def simulate_path(x0, y0, theta0, actions, precomp_prim):
         cx, cy, cth = trajectory[-1]
         
     return trajectory
+
+def plan_path_pure_rs(x0, y0, theta0, no_corridor=False, stats=None):
+    """
+    纯 RS 模式规划（用于调试）：
+    直接从起点计算一条前往目标的 RS 曲线，并进行碰撞检测。
+    如果全段无碰撞则返回成功，否则失败。
+    """
+    t_start = time.perf_counter()
+    import rs
+    
+    # 获取纯 RS 路径
+    rs_traj = rs.rs_sample_path(
+        x0, y0, theta0,
+        RS_GOAL_X, RS_GOAL_Y, RS_GOAL_TH,
+        MIN_TURN_RADIUS, step=DT * 0.5
+    )
+    
+    if stats is not None:
+        stats['use_rs'] = True
+        stats['expanded'] = 0
+        stats['two_stage'] = False
+        stats['pure_rs'] = True
+
+    if not rs_traj:
+        if stats is not None:
+            stats['elapsed_ms'] = round((time.perf_counter() - t_start) * 1000.0, 1)
+        return False, [], None
+        
+    # 碰撞检测（含边界和走廊）
+    ok = _check_traj_collision(rs_traj, no_corridor)
+    
+    if stats is not None:
+        stats['elapsed_ms'] = round((time.perf_counter() - t_start) * 1000.0, 1)
+        
+    if ok:
+        # 为了与统一接口兼容，返回空 acts，以及 rs_traj 即可
+        return True, [], rs_traj
+    else:
+        return False, [], rs_traj
+
 
 def solve():
     # 采用批量读取高速解析，极大地避免 Special Judge 逐行 I/O 阻塞

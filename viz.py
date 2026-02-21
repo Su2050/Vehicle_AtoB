@@ -127,7 +127,8 @@ class App:
         self.msg_color = COL_TEXT
 
         # Heuristic / obstacle mode flags
-        self.use_rs = False       # Tab  to toggle: Geometric / RS heuristic
+        self.planning_mode = 0    # M to toggle: 0=Geometric, 1=RS Heur, 2=Pure RS
+        self.rs_radius = 0.8      # +/- to adjust RS expansion radius
         self.no_corridor = False  # C    to toggle: Corridor / No-Corridor
         self.use_smooth = True    # P    to toggle: show smoothed path（默认开启 B 样条平滑）
 
@@ -163,12 +164,16 @@ class App:
                 return
             if ev.key == pygame.K_SPACE or ev.key == pygame.K_RETURN:
                 self._plan()
-            elif ev.key == pygame.K_TAB:
-                self.use_rs = not self.use_rs
+            elif ev.key == pygame.K_m:
+                self.planning_mode = (self.planning_mode + 1) % 3
                 self.path = []
                 self.smooth_path = []
                 self.finished = False
                 self.last_stats = {}
+            elif ev.key == pygame.K_EQUALS or ev.key == pygame.K_PLUS:
+                self.rs_radius += 0.5
+            elif ev.key == pygame.K_MINUS:
+                self.rs_radius = max(0.5, self.rs_radius - 0.5)
             elif ev.key == pygame.K_c:
                 self.no_corridor = not self.no_corridor
                 self.path = []
@@ -245,30 +250,53 @@ class App:
     # ── planning ───────────────────────────────────────────────
     def _plan(self):
         self.planning = True
-        heur_label = "RS" if self.use_rs else "Geometric"
+        mode_names = ["Geometric", "RS Heur", "Pure RS"]
+        heur_label = mode_names[self.planning_mode]
         corr_label = "NoCorr" if self.no_corridor else "Corridor"
-        self.msg = "Planning... [{} + {}]".format(heur_label, corr_label)
+        if self.planning_mode < 2:
+            self.msg = "Planning... [{} + {}] R={:.1f}m".format(heur_label, corr_label, self.rs_radius)
+        else:
+            self.msg = "Planning... [{} + {}]".format(heur_label, corr_label)
         self.msg_color = COL_TEXT
         self._draw()
         pygame.display.flip()
 
         st = {}
-        ok, acts, rs_traj = main.plan_path_robust(
-            self.sx, self.sy, self.sth, self.prims,
-            use_rs=self.use_rs,
-            no_corridor=self.no_corridor,
-            stats=st,
-        )
+        if self.planning_mode == 2:
+            ok, acts, rs_traj = main.plan_path_pure_rs(
+                self.sx, self.sy, self.sth,
+                no_corridor=self.no_corridor,
+                stats=st
+            )
+        else:
+            ok, acts, rs_traj = main.plan_path_robust(
+                self.sx, self.sy, self.sth, self.prims,
+                use_rs=(self.planning_mode == 1),
+                no_corridor=self.no_corridor,
+                stats=st,
+                rs_expansion_radius=self.rs_radius
+            )
         self.planning = False
         self.last_stats = st
 
         if not ok:
             if st.get('out_of_range'):
                 self.msg = "IMPOSSIBLE  |y|={:.2f}m 超出可规划范围".format(abs(self.sy))
+            elif self.planning_mode == 2:
+                # 纯 RS 模式如果有碰撞，给出明确的碰撞提示
+                self.msg = "COLLISION in Pure RS mode"
             else:
                 self.msg = "IMPOSSIBLE  规划失败（|y|={:.2f}m, |θ|={:.1f}°）".format(
                     abs(self.sy), abs(math.degrees(self.sth)))
             self.msg_color = (200, 50, 50)
+            
+            # 如果是纯 RS 模式，即使失败也画出轨迹
+            if self.planning_mode == 2 and rs_traj:
+                self.path = rs_traj
+                self.anim_i = 0
+                self.animating = True
+                self.smooth_path = []
+                self.rs_traj = []
             return
 
         self.stage_split_idx = None
@@ -306,16 +334,27 @@ class App:
         if self.rs_traj:
             traj.extend(self.rs_traj[1:])
 
-        self.path = traj
-
-        # ── 可选 B 样条平滑 ─────────────────────────────────────────
-        if _SMOOTH_AVAILABLE and len(traj) >= 4:
-            self.smooth_path = smooth_mod.smooth_path(traj)
-        else:
+        # ── 如果是纯 RS 模式，重建 RS 轨迹 ────────────────────────────────────
+        if self.planning_mode == 2:
+            self.path = rs_traj or []
+            if self.path:
+                self.anim_i = 0
+                self.animating = True
+                
+            # 纯 RS 模式不进行 B 样条平滑
             self.smooth_path = []
+            self.rs_traj = [] # 清空以防在 _draw 中被当作额外层绘制
+        else:
+            self.path = traj
+            
+            # ── 可选 B 样条平滑 ─────────────────────────────────────────
+            if _SMOOTH_AVAILABLE and len(traj) >= 4:
+                self.smooth_path = smooth_mod.smooth_path(traj)
+            else:
+                self.smooth_path = []
 
-        self.anim_i = 0
-        self.animating = True
+            self.anim_i = 0
+            self.animating = True
 
         tags = []
         if self.rs_traj:      tags.append("RS Expand")
@@ -654,8 +693,15 @@ class App:
                              (40, bar_y + 30))
 
         # ── Centre: mode badges ───────────────────────────────────────
-        heur_label = "RS Heuristic" if self.use_rs else "Geometric"
-        heur_col   = (30, 120, 200) if self.use_rs else (100, 100, 110)
+        mode_names = ["Geometric", "RS Heuristic", "Pure RS"]
+        heur_label = mode_names[self.planning_mode]
+        if self.planning_mode == 0:
+            heur_col = (100, 100, 110)
+        elif self.planning_mode == 1:
+            heur_col = (30, 120, 200)
+        else:
+            heur_col = (140, 60, 200)
+            
         corr_label = "No Corridor" if self.no_corridor else "Corridor ON"
         corr_col   = (200, 100, 30) if self.no_corridor else (80, 150, 80)
 
@@ -672,8 +718,10 @@ class App:
         smooth_label = "Smooth ON" if self.use_smooth else "Smooth OFF"
         smooth_col   = (200, 120, 30) if self.use_smooth else (140, 140, 150)
 
-        cx_badge = SCREEN_WIDTH // 2 - 180
+        cx_badge = SCREEN_WIDTH // 2 - 220
         cx_badge = badge(heur_label, heur_col, cx_badge, bar_y + 8)
+        if self.planning_mode < 2:
+            cx_badge = badge(f"R={self.rs_radius:.1f}m", (100, 100, 150), cx_badge, bar_y + 8)
         cx_badge = badge(corr_label, corr_col, cx_badge, bar_y + 8)
         cx_badge = badge(smooth_label, smooth_col, cx_badge, bar_y + 8)
 
@@ -692,8 +740,8 @@ class App:
 
         # ── Right column: key help ────────────────────────────────────
         lines = [
-            "W/S/A/D=Move  Q/E=Rotate  SPACE=Plan  R=Reset  F=Fast",
-            "Tab=Heuristic  C=Corridor  P=Smooth  Click/Drag=SetPos",
+            "W/S/A/D=Move  Q/E=Rotate  SPACE=Plan  R=Reset",
+            "M=Mode  +/-=Radius  C=Corridor  P=Smooth  Click/Drag=SetPos",
         ]
         for i, line in enumerate(lines):
             s = self.font.render(line, True, COL_TEXT_DIM)

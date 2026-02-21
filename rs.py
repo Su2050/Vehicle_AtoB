@@ -420,12 +420,44 @@ def _all_words(x, y, phi):
     """
     results = []
 
-    def _try(fn, tag, sign_t=1, sign_u=1, sign_v=1):
+    def _try(fn, tag):
         res = fn(x, y, phi)
         if res is not None:
             t, u, v = res
-            length = abs(t) + abs(u) + abs(v)
-            results.append((length, tag, t * sign_t, u * sign_u, v * sign_v))
+            
+            # Reconstruct segments based on the pattern
+            segs = []
+            if len(tag) == 6:
+                # CSC or CCC: 3 segments (t, u, v)
+                chars = [tag[0:2], tag[2:4], tag[4:6]]
+                vals = [t, u, v]
+                for ch, val in zip(chars, vals):
+                    sign = 1 if ch[1] == '+' else -1
+                    segs.append((ch[0], val * sign))
+            elif len(tag) == 8:
+                # 4 segments
+                chars = [tag[0:2], tag[2:4], tag[4:6], tag[6:8]]
+                
+                if fn in (_LpRupLumRm, _LmRumLupRp, _RpLupRumLm, _RmLumRupLp):
+                    # CCCC: t, u, u, v
+                    vals = [t, u, u, v]
+                elif fn in (_LpRmSmLm, _LmRpSmLp, _RpLmSmRm, _RmLpSmRp,
+                            _LpRmSmRm, _LmRpSmRp, _RpLmSmLm, _RmLpSmLp):
+                    # CCSC: t, pi/2, u, v
+                    vals = [t, _PI / 2.0, u, v]
+                elif fn in (_LpSmRmLp, _RmSmLmRm, _LmSmRmLm, _RpSpLpRp):
+                    # CSCC: t, u, pi/2, v
+                    vals = [t, u, _PI / 2.0, v]
+                else:
+                    raise ValueError("Unknown 4-segment function")
+                    
+                for ch, val in zip(chars, vals):
+                    sign = 1 if ch[1] == '+' else -1
+                    segs.append((ch[0], val * sign))
+                    
+            length = sum(abs(l) for _, l in segs)
+            results.append((length, segs))
+
 
     # CSC
     _try(_LpSpLp,      'L+S+L+')
@@ -553,17 +585,11 @@ def rs_best_path(x, y, phi, turning_radius):
         return []
 
     best = min(words, key=lambda w: w[0])
-    _, tag, t, u, v = best
-
-    # 解析 tag 字符串，例如 'L+R-S-L-' → [('L',+),('R',-),('S',-),('L',-)]
-    segments_raw = _parse_tag(tag)
-
-    # t, u, v 对应前三段（最多5段时需扩展，但当前实现最多4段已足够）
-    seg_lengths_norm = [t, u, v]
+    _, segs_norm = best
 
     result = []
-    for i, (stype, sign) in enumerate(segments_raw[:3]):
-        length_m = seg_lengths_norm[i] * sign * turning_radius
+    for stype, length_norm in segs_norm:
+        length_m = length_norm * turning_radius
         if abs(length_m) > 1e-6:
             result.append((stype, length_m))
     return result
