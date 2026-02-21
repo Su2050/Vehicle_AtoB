@@ -467,8 +467,10 @@ def _k_turn_preposition(x0, y0, theta0, precomp_prim, no_corridor=False):
         return y_over + y_raw + x_pen + x_over + th_pen + gear_pen
 
     def _check_goal():
+        # Require more X distance if lateral error Y is larger, to give Stage-2 enough room
+        required_x_min = max(PREAPPROACH_X_MIN, 2.3 + 2.0 * abs(cy))
         return (abs(cy) <= PREAPPROACH_Y_MAX
-                and PREAPPROACH_X_MIN <= cx <= PREAPPROACH_X_MAX
+                and required_x_min <= cx <= PREAPPROACH_X_MAX
                 and abs(cth) <= PREAPPROACH_TH_MAX)
 
     # ── Phase-0：如果横向偏差极大且距离墙太近，强制倒车拉开空间并打方向 ──
@@ -632,8 +634,12 @@ def plan_path_robust(x0, y0, theta0, precomp_prim,
             stats['out_of_range'] = True
         return False, None, None
 
-    needs_two_stage = (abs(y0) > TWO_STAGE_Y_THRESH
-                       or abs(theta0) > TWO_STAGE_TH_THRESH)
+    # 若离目标太近，哪怕一点侧向偏移也无法直接开过去，必须走两阶段拉开空间
+    if abs(x0) < 4.0 and abs(y0) > 0.2:
+        needs_two_stage = True
+    else:
+        needs_two_stage = (abs(y0) > TWO_STAGE_Y_THRESH
+                           or abs(theta0) > TWO_STAGE_TH_THRESH)
 
     if not needs_two_stage:
         return plan_path(x0, y0, theta0, precomp_prim,
@@ -772,7 +778,9 @@ def plan_path_robust(x0, y0, theta0, precomp_prim,
         # 修复回归：对于完全不需要 Phase0 且角度很小的情况，直接跳过 Stage-1
         # 仅在 y 大于一定程度且不极度偏离时才尝试 A* 预接近
         # 若 |y| > 3.0，A* 非常容易陷入庞大搜索空间失败，不如直接交由贪心预定位兜底
-        if (phase0_acts or abs(my) > 1.2 or abs(mth) > 0.5) and abs(my) <= 3.0:
+        # 另外，如果起点的 x 比较小（离目标很近）但横向 y 又很大，A* 会因为需要倒车拉开空间而陷入局部极小值，
+        # 此时直接交给擅长倒车揉库的贪心 K-turn 处理。
+        if (phase0_acts or abs(my) > 1.2 or abs(mth) > 0.5) and abs(my) <= 3.0 and mx >= 4.0:
             ok1, acts1, _ = plan_path(
                 mx, my, mth, precomp_prim,
                 use_rs=False,
