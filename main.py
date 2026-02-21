@@ -443,7 +443,7 @@ def _k_turn_preposition(x0, y0, theta0, precomp_prim, no_corridor=False):
     def _score_y(ex, ey, eth, gear=None, prev_gear=None, w_x=1.0):
         y_over = max(0.0, abs(ey) - PREAPPROACH_Y_MAX) * 10.0
         # 如果 y 已经在比较小的范围内，不用过分强求它趋近于 0，给车身对齐留出容错空间
-        y_raw  = max(0.0, abs(ey) - 0.5) * 1.5
+        y_raw  = max(0.0, abs(ey) - 0.1) * 2.0
         x_pen  = max(0.0, PREAPPROACH_X_MIN - ex) * w_x * 5.0
         
         # 若角度依然偏大，强烈惩罚靠近目标区（防止进入 x 小于 3.0 的死胡同）
@@ -542,7 +542,7 @@ def _k_turn_preposition(x0, y0, theta0, precomp_prim, no_corridor=False):
                 break
 
     # ── Phase-1b：紧急减 y（一步贪心，x >= X_FLOOR_EMG，仅当 y 仍大时） ─
-    if abs(cy) > PREAPPROACH_Y_MAX + 0.05:
+    if abs(cy) > PREAPPROACH_Y_MAX - 0.02:
         best_abs_y = abs(cy); stagnate_emg = 0
         for _ in range(60):
             if _check_goal():
@@ -568,7 +568,9 @@ def _k_turn_preposition(x0, y0, theta0, precomp_prim, no_corridor=False):
 
     # ── Phase-2：x 恢复——倒退使 x >= PREAPPROACH_X_MIN ──────────────────
     for _ in range(50):
-        if cx >= PREAPPROACH_X_MIN:
+        if _check_goal():
+            break
+        if cx >= PREAPPROACH_X_MAX - 1.0:
             break
         best_rev = best_rev_st = None
         prev_gear = acts[-1][0] if acts else None
@@ -577,15 +579,21 @@ def _k_turn_preposition(x0, y0, theta0, precomp_prim, no_corridor=False):
             # 允许在极度靠近墙时前进，否则优先倒退
             if act[0] != 'R' and cx >= X_FLOOR_EMG + 0.5:
                 continue
-            ok_r, ex_r, ey_r, eth_r = _apply(cx, cy, cth, traj)
+            ok_r, ex_r, ey_r, eth_r = _apply(cx, cy, cth, traj, X_FLOOR_EMG)
             if not ok_r: continue
             
-            x_lack = max(0.0, PREAPPROACH_X_MIN - ex_r) * 3.0
-            dy_pen = abs(abs(ey_r) - abs(cy)) * 2.0
-            th_pen = max(0.0, abs(eth_r) - PREAPPROACH_TH_MAX) * 0.05
-            gear_pen = 0.0 if prev_gear is None or act[0] == prev_gear else 50.0
+            x_lack = max(0.0, PREAPPROACH_X_MIN - ex_r) * 5.0
+            y_over = max(0.0, abs(ey_r) - PREAPPROACH_Y_MAX) * 10.0
+            y_raw  = max(0.0, abs(ey_r) - 0.1) * 2.0
+            th_pen = max(0.0, abs(eth_r) - PREAPPROACH_TH_MAX) * 2.0
             
-            rv = x_lack + dy_pen + th_pen + gear_pen
+            # 倒车时对角度的调整
+            if ey_r > 0 and eth_r > 0 and act[0] == 'R': th_pen += 2.0 * abs(eth_r)
+            if ey_r < 0 and eth_r < 0 and act[0] == 'R': th_pen += 2.0 * abs(eth_r)
+            
+            gear_pen = 0.0 if prev_gear is None or act[0] == prev_gear else 2.0
+            
+            rv = x_lack + y_over + y_raw + th_pen + gear_pen
             if rv < best_rv:
                 best_rv = rv; best_rev = act; best_rev_st = (ex_r, ey_r, eth_r)
         if best_rev is None: break
