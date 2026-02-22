@@ -564,6 +564,32 @@ def rs_distance_pose(x1, y1, th1, x2, y2, th2, turning_radius):
 # 路径采样：用于 A* 解析终点扩展（一杆进洞）
 # ─────────────────────────────────────────────────────────────────────────────
 
+def rs_all_paths(x, y, phi, turning_radius):
+    """
+    返回从原点到 (x, y, phi) 的所有 RS 路径各段参数，按长度升序排列。
+
+    返回值: list of [ list of (seg_type, length_meters) ]
+    """
+    if turning_radius <= 0.0:
+        raise ValueError(f"turning_radius must be positive, got {turning_radius}")
+
+    nx = x / turning_radius
+    ny = y / turning_radius
+
+    words = _all_words(nx, ny, phi)
+    if not words:
+        return []
+
+    # 按长度排序
+    words.sort(key=lambda w: w[0])
+    
+    all_segs = []
+    for length, segs_norm in words:
+        segs = [(s, length_norm * turning_radius) for s, length_norm in segs_norm]
+        all_segs.append(segs)
+        
+    return all_segs
+
 def rs_best_path(x, y, phi, turning_radius):
     """
     返回从原点到 (x, y, phi) 的最短 RS 路径各段参数。
@@ -736,6 +762,72 @@ def rs_sample_path(x1, y1, th1, x2, y2, th2, turning_radius, step=0.05,
                       err_pos, err_ang_deg), file=sys.stderr)
 
     return world_pts
+
+
+def rs_sample_path_multi(x1, y1, th1, x2, y2, th2, turning_radius, step=0.05, max_paths=5):
+    """
+    尝试多条 RS 路径（按长度排序），返回所有采样后的轨迹列表。
+    用于在有障碍物时找到第一条无碰撞路径。
+    返回: list of [(x,y,th), ...] 轨迹列表，按长度升序
+    """
+    dx = x2 - x1
+    dy = y2 - y1
+    cos_t = math.cos(th1)
+    sin_t = math.sin(th1)
+    lx =  dx * cos_t + dy * sin_t
+    ly = -dx * sin_t + dy * cos_t
+    lphi = th2 - th1
+    while lphi > _PI: lphi -= _TWO_PI
+    while lphi <= -_PI: lphi += _TWO_PI
+
+    x_rs_goal = -lx
+    y_rs_goal = -ly
+    th_rs_goal = lphi
+    while th_rs_goal > _PI: th_rs_goal -= _TWO_PI
+    while th_rs_goal <= -_PI: th_rs_goal += _TWO_PI
+
+    all_segs = rs_all_paths(x_rs_goal, y_rs_goal, th_rs_goal, turning_radius)
+    if not all_segs:
+        return []
+
+    results = []
+    for segs in all_segs[:max_paths]:
+        cx_rs, cy_rs, cth_rs = 0.0, 0.0, 0.0
+        rs_pts = [(cx_rs, cy_rs, cth_rs)]
+        for stype, length_m in segs:
+            direction = 1 if length_m >= 0 else -1
+            dist_left = abs(length_m)
+            while dist_left > 1e-9:
+                ds = min(step, dist_left)
+                dist_left -= ds
+                if stype == 'S':
+                    cx_rs += direction * ds * math.cos(cth_rs)
+                    cy_rs += direction * ds * math.sin(cth_rs)
+                elif stype == 'L':
+                    dth = direction * ds / turning_radius
+                    cx_rs = cx_rs + turning_radius * (math.sin(cth_rs + dth) - math.sin(cth_rs))
+                    cy_rs = cy_rs + turning_radius * (math.cos(cth_rs) - math.cos(cth_rs + dth))
+                    cth_rs += dth
+                else:
+                    dth = -direction * ds / turning_radius
+                    cx_rs = cx_rs + turning_radius * (math.sin(cth_rs) - math.sin(cth_rs + dth))
+                    cy_rs = cy_rs + turning_radius * (math.cos(cth_rs + dth) - math.cos(cth_rs))
+                    cth_rs += dth
+                while cth_rs > _PI: cth_rs -= _TWO_PI
+                while cth_rs <= -_PI: cth_rs += _TWO_PI
+                rs_pts.append((cx_rs, cy_rs, cth_rs))
+
+        world_pts = []
+        for xr, yr, thr in rs_pts:
+            lx_p, ly_p = -xr, -yr
+            wx = x1 + lx_p * cos_t - ly_p * sin_t
+            wy = y1 + lx_p * sin_t + ly_p * cos_t
+            wth = th1 + thr
+            while wth > _PI: wth -= _TWO_PI
+            while wth <= -_PI: wth += _TWO_PI
+            world_pts.append((wx, wy, wth))
+        results.append(world_pts)
+    return results
 
 
 def _angle_diff(a, b):
