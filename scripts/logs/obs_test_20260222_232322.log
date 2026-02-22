@@ -1,0 +1,75 @@
+
+================================================================================================
+=== 新测试任务 ===
+开始时间: 2026-02-22 23:23:22
+测试档位: quick
+镜像场景: OFF
+单用例超时: 45s
+每场景case上限: 不限制
+场景总数: 7
+================================================================================================
+
+
+>>> 测试场景: A_Near_Goal <<<
+障碍物: [{'x': 3.0, 'y': -1.5, 'w': 0.6, 'h': 1.2}]
+--------------------------------------------------------------------------------
+Case     | Pos(x, y, th)        | Success | Time(ms) | Exp    | Strategy  
+--------------------------------------------------------------------------------
+#001     | (3.5,  0.5,    0°)   | NO      | 41218.5  | 50000  | 2-Stage    | Stage2-Fail-Fallback (P0:0ms, S1:1ms, S1.5:795ms, S2:20029ms, S1End:None)
+#002     | (3.5,  0.5,   90°)   | YES     | 21862.2  | 394    | 2-Stage   
+#003     | (3.5,  0.5,  180°)   | NO      | 41796.1  | 46000  | 2-Stage    | Stage2-Fail-Fallback (P0:0ms, S1:175ms, S1.5:480ms, S2:20395ms, S1End:None)
+#004     | (3.5,  0.5,  -90°)   | NO      | 42207.1  | 48000  | 2-Stage    | Stage2-Fail-Fallback (P0:0ms, S1:78ms, S1.5:795ms, S2:20679ms, S1End:None)
+#005     | (3.5,  0.5, -135°)   | NO      | 41751.8  | 40000  | 2-Stage    | Stage2-Fail-Fallback (P0:0ms, S1:152ms, S1.5:870ms, S2:20435ms, S1End:None)
+#006     | (3.5,  1.5,    0°)   | NO      | 41126.0  | 44000  | 2-Stage    | Stage2-Fail-Fallback (P0:0ms, S1:4ms, S1.5:154ms, S2:20672ms, S1End:None)
+#007     | (3.5,  1.5,   90°)   | YES     | 20949.1  | 27     | 2-Stage   
+#008     | (3.5,  1.5,  180°)   | NO      | 41833.9  | 42000  | 2-Stage    | Stage2-Fail-Fallback (P0:0ms, S1:155ms, S1.5:849ms, S2:20374ms, S1End:None)
+#009     | (3.5,  1.5,  -90°)   | NO      | 41559.9  | 48000  | 2-Stage    | Stage2-Fail-Fallback (P0:0ms, S1:45ms, S1.5:806ms, S2:20517ms, S1End:None)
+#010     | (3.5,  1.5, -135°)   | NO      | 42236.5  | 48000  | 2-Stage    | Stage2-Fail-Fallback (P0:0ms, S1:161ms, S1.5:833ms, S2:20380ms, S1End:None)
+#011     | (4.5, -1.5,    0°)   | NO      | 45000.0  | 0      | 2-Stage+TIMEOUT | Timeout (P0:0ms, S1:0ms, S1.5:269ms, S2:0ms, S1End:None)
+#012     | (4.5, -1.5,   90°)   | NO      | 41649.2  | 42000  | 2-Stage    | Stage2-Fail-Fallback (P0:0ms, S1:159ms, S1.5:285ms, S2:20636ms, S1End:None)
+#013     | (4.5, -1.5,  180°)   | NO      | 40613.7  | 42000  | 2-Stage    | Stage2-Fail-Fallback (P0:0ms, S1:151ms, S1.5:55ms, S2:20184ms, S1End:None)
+#014     | (4.5, -1.5,  -90°)   | NO      | 45000.0  | 0      | 2-Stage+TIMEOUT | Timeout (P0:0ms, S1:0ms, S1.5:816ms, S2:0ms, S1End:None)
+#015     | (4.5, -1.5, -135°)   | NO      | 41253.1  | 48000  | 2-Stage    | Stage2-Fail-Fallback (P0:0ms, S1:120ms, S1.5:85ms, S2:20455ms, S1End:None)
+#016     | (4.5, -0.5,    0°)   | YES     | 40813.0  | 5      | 2-Stage   
+#017     | (4.5, -0.5,   90°)   | NO      | 45000.0  | 0      | 2-Stage+TIMEOUT | Timeout (P0:0ms, S1:0ms, S1.5:299ms, S2:0ms, S1End:None)
+#018     | (4.5, -0.5,  180°)   | NO      | 41742.0  | 44000  | 2-Stage    | Stage2-Fail-Fallback (P0:0ms, S1:94ms, S1.5:831ms, S2:20038ms, S1End:None)
+#019     | (4.5, -0.5,  -90°)   | NO      | 42029.1  | 40000  | 2-Stage    | Stage2-Fail-Fallback (P0:0ms, S1:106ms, S1.5:809ms, S2:20231ms, S1End:None)
+#020     | (4.5, -0.5, -135°)   | NO      | 40814.7  | 46000  | 2-Stage    | Stage2-Fail-Fallback (P0:0ms, S1:236ms, S1.5:373ms, S2:20124ms, S1End:None)
+#021     | (4.5,  0.5,    0°)   | NO      | 42045.0  | 46000  | 2-Stage    | Stage2-Fail-Fallback (P0:0ms, S1:731ms, S1.5:294ms, S2:20816ms, S1End:None)
+#022     | (4.5,  0.5,   90°)   | NO      | 45000.0  | 0      | 2-Stage+TIMEOUT | Timeout (P0:0ms, S1:0ms, S1.5:798ms, S2:0ms, S1End:None)
+#023     | (4.5,  0.5,  180°)   | NO      | 41409.8  | 44000  | 2-Stage    | Stage2-Fail-Fallback (P0:0ms, S1:163ms, S1.5:807ms, S2:20294ms, S1End:None)
+#024     | (4.5,  0.5,  -90°)   | NO      | 42063.7  | 42000  | 2-Stage    | Stage2-Fail-Fallback (P0:0ms, S1:79ms, S1.5:822ms, S2:20376ms, S1End:None)
+#025     | (4.5,  0.5, -135°)   | NO      | 41474.6  | 44000  | 2-Stage    | Stage2-Fail-Fallback (P0:0ms, S1:153ms, S1.5:216ms, S2:20663ms, S1End:None)
+#026     | (4.5,  1.5,    0°)   | NO      | 42406.2  | 50000  | 2-Stage    | Stage2-Fail-Fallback (P0:0ms, S1:830ms, S1.5:815ms, S2:20031ms, S1End:None)
+#027     | (4.5,  1.5,   90°)   | NO      | 45000.0  | 0      | 2-Stage+TIMEOUT | Timeout (P0:0ms, S1:0ms, S1.5:826ms, S2:0ms, S1End:None)
+#028     | (4.5,  1.5,  180°)   | NO      | 41456.3  | 44000  | 2-Stage    | Stage2-Fail-Fallback (P0:0ms, S1:152ms, S1.5:790ms, S2:20132ms, S1End:None)
+#029     | (4.5,  1.5,  -90°)   | NO      | 41951.6  | 38000  | 2-Stage    | Stage2-Fail-Fallback (P0:0ms, S1:545ms, S1.5:186ms, S2:20396ms, S1End:None)
+#030     | (4.5,  1.5, -135°)   | NO      | 42474.7  | 42000  | 2-Stage    | Stage2-Fail-Fallback (P0:0ms, S1:159ms, S1.5:823ms, S2:20731ms, S1End:None)
+#031     | (5.5, -1.5,    0°)   | NO      | 41853.2  | 46000  | 2-Stage    | Stage2-Fail-Fallback (P0:0ms, S1:86ms, S1.5:841ms, S2:20299ms, S1End:None)
+#032     | (5.5, -1.5,   90°)   | NO      | 41096.3  | 44000  | 2-Stage    | Stage2-Fail-Fallback (P0:0ms, S1:261ms, S1.5:468ms, S2:20210ms, S1End:None)
+#033     | (5.5, -1.5,  180°)   | NO      | 42603.4  | 44000  | 2-Stage    | Stage2-Fail-Fallback (P0:0ms, S1:108ms, S1.5:790ms, S2:20796ms, S1End:None)
+#034     | (5.5, -1.5,  -90°)   | NO      | 45000.0  | 0      | 2-Stage+TIMEOUT | Timeout (P0:0ms, S1:0ms, S1.5:230ms, S2:0ms, S1End:None)
+#035     | (5.5, -1.5, -135°)   | NO      | 45000.0  | 0      | 2-Stage+TIMEOUT | Timeout (P0:0ms, S1:0ms, S1.5:800ms, S2:0ms, S1End:None)
+#036     | (5.5, -0.5,    0°)   | NO      | 42116.7  | 46000  | 2-Stage    | Stage2-Fail-Fallback (P0:0ms, S1:168ms, S1.5:813ms, S2:20510ms, S1End:None)
+#037     | (5.5, -0.5,   90°)   | YES     | 40664.2  | 4      | 2-Stage   
+#038     | (5.5, -0.5,  180°)   | NO      | 41901.9  | 48000  | 2-Stage    | Stage2-Fail-Fallback (P0:0ms, S1:108ms, S1.5:802ms, S2:20228ms, S1End:None)
+#039     | (5.5, -0.5,  -90°)   | NO      | 42177.6  | 46000  | 2-Stage    | Stage2-Fail-Fallback (P0:0ms, S1:102ms, S1.5:797ms, S2:20646ms, S1End:None)
+#040     | (5.5, -0.5, -135°)   | NO      | 41869.0  | 48000  | 2-Stage    | Stage2-Fail-Fallback (P0:0ms, S1:230ms, S1.5:791ms, S2:20711ms, S1End:None)
+#041     | (5.5,  0.5,    0°)   | NO      | 40868.2  | 48000  | 2-Stage    | Stage2-Fail-Fallback (P0:0ms, S1:314ms, S1.5:148ms, S2:20171ms, S1End:None)
+#042     | (5.5,  0.5,   90°)   | YES     | 40785.4  | 4      | 2-Stage   
+#043     | (5.5,  0.5,  180°)   | NO      | 40788.1  | 46000  | 2-Stage    | Stage2-Fail-Fallback (P0:0ms, S1:126ms, S1.5:292ms, S2:20150ms, S1End:None)
+#044     | (5.5,  0.5,  -90°)   | NO      | 41131.3  | 46000  | 2-Stage    | Stage2-Fail-Fallback (P0:0ms, S1:79ms, S1.5:789ms, S2:20126ms, S1End:None)
+#045     | (5.5,  0.5, -135°)   | NO      | 41826.0  | 44000  | 2-Stage    | Stage2-Fail-Fallback (P0:0ms, S1:127ms, S1.5:753ms, S2:20836ms, S1End:None)
+#046     | (5.5,  1.5,    0°)   | NO      | 41284.7  | 48000  | 2-Stage    | Stage2-Fail-Fallback (P0:0ms, S1:92ms, S1.5:599ms, S2:20313ms, S1End:None)
+#047     | (5.5,  1.5,   90°)   | YES     | 40381.5  | 4      | 2-Stage   
+#048     | (5.5,  1.5,  180°)   | NO      | 41548.9  | 42000  | 2-Stage    | Stage2-Fail-Fallback (P0:0ms, S1:160ms, S1.5:359ms, S2:20197ms, S1End:None)
+#049     | (5.5,  1.5,  -90°)   | NO      | 42884.0  | 46000  | 2-Stage    | Stage2-Fail-Fallback (P0:0ms, S1:983ms, S1.5:810ms, S2:20681ms, S1End:None)
+#050     | (5.5,  1.5, -135°)   | NO      | 42777.6  | 32000  | 2-Stage    | Stage2-Fail-Fallback (P0:0ms, S1:163ms, S1.5:894ms, S2:20783ms, S1End:None)
+#051     | (6.5, -1.5,    0°)   | NO      | 43257.1  | 44000  | 2-Stage    | Stage2-Fail-Fallback (P0:0ms, S1:820ms, S1.5:1006ms, S2:20871ms, S1End:None)
+#052     | (6.5, -1.5,   90°)   | NO      | 42245.6  | 40000  | 2-Stage    | Stage2-Fail-Fallback (P0:0ms, S1:155ms, S1.5:829ms, S2:21090ms, S1End:None)
+#053     | (6.5, -1.5,  180°)   | NO      | 41069.7  | 40000  | 2-Stage    | Stage2-Fail-Fallback (P0:0ms, S1:161ms, S1.5:100ms, S2:20583ms, S1End:None)
+#054     | (6.5, -1.5,  -90°)   | NO      | 45000.0  | 0      | 2-Stage+TIMEOUT | Timeout (P0:0ms, S1:0ms, S1.5:334ms, S2:0ms, S1End:None)
+#055     | (6.5, -1.5, -135°)   | NO      | 45000.0  | 0      | 2-Stage+TIMEOUT | Timeout (P0:0ms, S1:0ms, S1.5:266ms, S2:0ms, S1End:None)
+#056     | (6.5, -0.5,    0°)   | NO      | 41473.7  | 42000  | 2-Stage    | Stage2-Fail-Fallback (P0:0ms, S1:196ms, S1.5:819ms, S2:20229ms, S1End:None)
+#057     | (6.5, -0.5,   90°)   | YES     | 40795.9  | 5      | 2-Stage   
+#058     | (6.5, -0.5,  180°)   | NO      | 42000.1  | 46000  | 2-Stage    | Stage2-Fail-Fallback (P0:0ms, S1:187ms, S1.5:866ms, S2:20214ms, S1End:None)
