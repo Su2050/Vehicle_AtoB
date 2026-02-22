@@ -88,36 +88,22 @@ def check_collision(nx, ny, nth, sin_nth=None, no_corridor=False, obstacles=None
     reason: 'OK', 'CORRIDOR', 'OBSTACLE'
 
     no_corridor=True 时跳过安全走廊约束。
-    obstacles: 可选障碍物列表，格式为 [{"x": x, "y": y, "w": w, "h": h}, ...]
+    obstacles: 可选障碍物列表，如果是预处理过的则为 [(min_x, max_x, min_y, max_y), ...]，否则为原格式
     """
-    # 用户定义的矩形障碍物碰撞检测（叉车模型简化为一个点或一个包围盒）
-    # 为简单起见，如果障碍物只给矩形，我们用点(nx, ny)或加上安全半径检测
-    # 假设叉车是个点，加上一定膨胀，这里我们先实现最基本的点是否在矩形内。
-    # 为了更准确，我们可以检查叉车中心是否在障碍物扩展后的多边形内
     if obstacles:
-        # 叉车近似为一个半径为 0.5m 的圆（或者你可以根据具体需要调整）
-        forklift_radius = 0.5
+        # 叉车近似为一个半径为 0.5m 的圆
         for obs in obstacles:
-            ox, oy, ow, oh = obs['x'], obs['y'], obs['w'], obs['h']
-            # 矩形的中心是 ox + ow/2, oy + oh/2（如果是左上角或左下角坐标）
-            # 假设 x, y 是左上角，往下（或往右）是正方向
-            # 最简单的检测：点 (nx, ny) 距离矩形 < forklift_radius
+            if isinstance(obs, tuple):
+                min_x, max_x, min_y, max_y = obs
+            else:
+                ox, oy, ow, oh = obs['x'], obs['y'], obs['w'], obs['h']
+                min_x, max_x = min(ox, ox + ow), max(ox, ox + ow)
+                min_y, max_y = min(oy, oy + oh), max(oy, oy + oh)
             
-            # 计算点(nx, ny)到矩形的最近距离
-            dx = max(ox - nx, 0, nx - (ox + ow))
-            dy = max(oy - ny, 0, ny - (oy + oh))
+            dx = nx - max_x if nx > max_x else (min_x - nx if nx < min_x else 0.0)
+            dy = ny - max_y if ny > max_y else (min_y - ny if ny < min_y else 0.0)
             
-            # 假设我们的坐标系：ox, oy 可能是左下角，也可能是任意形式
-            # 无论如何，我们采用 axis-aligned bounding box (AABB) 碰撞
-            # 但要注意：viz.py 中绘制障碍物时，可能 (x, y) 是鼠标起点，w, h 是宽高
-            # 这里的坐标可能需要转换。如果假定是标准笛卡尔系：
-            min_x, max_x = min(ox, ox + ow), max(ox, ox + ow)
-            min_y, max_y = min(oy, oy + oh), max(oy, oy + oh)
-            
-            dx = max(min_x - nx, 0, nx - max_x)
-            dy = max(min_y - ny, 0, ny - max_y)
-            
-            if dx * dx + dy * dy < forklift_radius * forklift_radius:
+            if dx * dx + dy * dy < 0.25: # 0.5 * 0.5
                 return False, 'OBSTACLE'
 
     # 安全走廊门控 (safe_corridor) —— 可选关闭
@@ -140,17 +126,228 @@ def _check_traj_collision(traj, no_corridor=False, obstacles=None):
     return True
 
 
+class DijkstraGrid:
+    def __init__(self, goal_x, goal_y, grid_res=0.1, inflate_radius=0.6):
+        self.res = grid_res
+        self.inflate_radius = inflate_radius
+        self.goal_x = goal_x
+        self.goal_y = goal_y
+        
+        # Grid boundaries based on workspace limits
+        self.min_x, self.max_x = -1.0, 10.0
+        self.min_y, self.max_y = -6.0, 6.0
+        
+        self.nx = int((self.max_x - self.min_x) / self.res)
+        self.ny = int((self.max_y - self.min_y) / self.res)
+        
+        self.dist_map = None
+        self.obs_map = None
+        self.angle_map = None
+
+    def _world_to_grid(self, wx, wy):
+        gx = int((wx - self.min_x) / self.res)
+        gy = int((wy - self.min_y) / self.res)
+        return gx, gy
+
+    def _grid_to_world(self, gx, gy):
+        wx = self.min_x + gx * self.res
+        wy = self.min_y + gy * self.res
+        return wx, wy
+
+    def build_map(self, obstacles, start_x=None, start_y=None):
+        import heapq
+        
+        # Initialize grid
+        self.obs_map = [[False] * self.ny for _ in range(self.nx)]
+        self.dist_map = [[float('inf')] * self.ny for _ in range(self.nx)]
+        self.cost_map = [[1.0] * self.ny for _ in range(self.nx)]
+        
+        # Hard inflation must match the collision check radius (0.5m)
+        # Using exactly 0.5m so the Dijkstra heuristic is admissible (never overestimates)
+        inf_cells = int(math.ceil(0.5 / self.res))
+        soft_inf_cells = int(math.ceil(1.0 / self.res))
+        
+        if obstacles:
+            for obs in obstacles:
+                if isinstance(obs, tuple):
+                    min_wx, max_wx, min_wy, max_wy = obs
+                else:
+                    ox, oy, ow, oh = obs['x'], obs['y'], obs['w'], obs['h']
+                    min_wx = min(ox, ox + ow)
+                    max_wx = max(ox, ox + ow)
+                    min_wy = min(oy, oy + oh)
+                    max_wy = max(oy, oy + oh)
+                
+                gx_min, gy_min = self._world_to_grid(min_wx, min_wy)
+                gx_max, gy_max = self._world_to_grid(max_wx, max_wy)
+                
+                # Apply hard inflation
+                hx_min = max(0, gx_min - inf_cells)
+                hy_min = max(0, gy_min - inf_cells)
+                hx_max = min(self.nx - 1, gx_max + inf_cells)
+                hy_max = min(self.ny - 1, gy_max + inf_cells)
+                
+                for x in range(hx_min, hx_max + 1):
+                    for y in range(hy_min, hy_max + 1):
+                        if 0 <= x < self.nx and 0 <= y < self.ny:
+                            self.obs_map[x][y] = True
+
+                # Apply soft inflation (cost map) to push path away from obstacle
+                sx_min = max(0, gx_min - soft_inf_cells)
+                sy_min = max(0, gy_min - soft_inf_cells)
+                sx_max = min(self.nx - 1, gx_max + soft_inf_cells)
+                sy_max = min(self.ny - 1, gy_max + soft_inf_cells)
+                for x in range(sx_min, sx_max + 1):
+                    for y in range(sy_min, sy_max + 1):
+                        if 0 <= x < self.nx and 0 <= y < self.ny and not self.obs_map[x][y]:
+                            wx, wy = self._grid_to_world(x, y)
+                            dx = max(min_wx - wx, 0, wx - max_wx)
+                            dy = max(min_wy - wy, 0, wy - max_wy)
+                            dist = math.sqrt(dx*dx + dy*dy)
+                            if dist < 1.0:
+                                self.cost_map[x][y] += (1.0 - dist) * 2.0
+        
+        # Also mark hard walls (x < 1.9)
+        wall_gx_max, _ = self._world_to_grid(1.9, 0)
+        for x in range(0, min(self.nx, wall_gx_max)):
+            for y in range(self.ny):
+                self.obs_map[x][y] = True
+                
+        # Clear obstacles near the start position so it doesn't get trapped inside inflation!
+        if start_x is not None and start_y is not None:
+            gx_start, gy_start = self._world_to_grid(start_x, start_y)
+            clear_radius = int(math.ceil(0.6 / self.res))
+            for x in range(max(0, gx_start - clear_radius), min(self.nx, gx_start + clear_radius + 1)):
+                for y in range(max(0, gy_start - clear_radius), min(self.ny, gy_start + clear_radius + 1)):
+                    # Clear hard obstacle flag, but keep high cost so it prefers to leave the area ASAP
+                    if self.obs_map[x][y]:
+                        self.obs_map[x][y] = False
+                        self.cost_map[x][y] += 20.0
+
+        # Dijkstra starting from goal
+        gx_goal, gy_goal = self._world_to_grid(self.goal_x, self.goal_y)
+        
+        # Clear obstacles near the goal position so it doesn't get trapped!
+        goal_clear_radius = int(math.ceil(0.5 / self.res))  # Clear just enough for goal
+        for x in range(max(0, gx_goal - goal_clear_radius), min(self.nx, gx_goal + goal_clear_radius + 1)):
+            for y in range(max(0, gy_goal - goal_clear_radius), min(self.ny, gy_goal + goal_clear_radius + 1)):
+                if 0 <= x < self.nx and 0 <= y < self.ny:
+                    # Don't clear the hard wall (x < 1.9)
+                    if x >= wall_gx_max:
+                        if self.obs_map[x][y]:
+                            self.obs_map[x][y] = False
+                            self.cost_map[x][y] += 20.0
+        
+        q = [(0.0, gx_goal, gy_goal)]
+        if 0 <= gx_goal < self.nx and 0 <= gy_goal < self.ny:
+            self.dist_map[gx_goal][gy_goal] = 0.0
+            
+        # 8-connected neighbors
+        dirs = [
+            (1, 0, 1.0), (0, 1, 1.0), (-1, 0, 1.0), (0, -1, 1.0),
+            (1, 1, 1.414), (-1, 1, 1.414), (1, -1, 1.414), (-1, -1, 1.414)
+        ]
+        
+        while q:
+            d, gx, gy = heapq.heappop(q)
+            
+            if d > self.dist_map[gx][gy]:
+                continue
+                
+            for dx, dy, move_cost in dirs:
+                nx, ny = gx + dx, gy + dy
+                
+                if 0 <= nx < self.nx and 0 <= ny < self.ny:
+                    if not self.obs_map[nx][ny]:
+                        # Direct cell cost
+                        cell_cost = move_cost * self.res * self.cost_map[nx][ny]
+                        new_d = d + cell_cost
+                        if new_d < self.dist_map[nx][ny]:
+                            self.dist_map[nx][ny] = new_d
+                            heapq.heappush(q, (new_d, nx, ny))
+                            
+        # Precompute gradient angle map for O(1) heuristic lookups
+        self.angle_map = [[None for _ in range(self.ny)] for _ in range(self.nx)]
+        for gx in range(self.nx):
+            for gy in range(self.ny):
+                dist = self.dist_map[gx][gy]
+                if dist != float('inf') and dist > 0.1 and not self.obs_map[gx][gy]:
+                    min_d = dist
+                    best_dx, best_dy = 0, 0
+                    for dx, dy, _cost in dirs:
+                        nx, ny = gx + dx, gy + dy
+                        if 0 <= nx < self.nx and 0 <= ny < self.ny:
+                            d = self.dist_map[nx][ny]
+                            if d < min_d:
+                                min_d = d
+                                best_dx, best_dy = dx, dy
+                    if best_dx != 0 or best_dy != 0:
+                        self.angle_map[gx][gy] = math.atan2(best_dy * self.res, best_dx * self.res)
+
+    def line_of_sight(self, wx1, wy1, wx2, wy2):
+        x0, y0 = self._world_to_grid(wx1, wy1)
+        x1, y1 = self._world_to_grid(wx2, wy2)
+        dx = abs(x1 - x0)
+        dy = -abs(y1 - y0)
+        sx = 1 if x0 < x1 else -1
+        sy = 1 if y0 < y1 else -1
+        err = dx + dy
+        while True:
+            if x0 == x1 and y0 == y1: return True
+            if 0 <= x0 < self.nx and 0 <= y0 < self.ny:
+                if self.obs_map[x0][y0]: return False
+            else:
+                return False
+            e2 = 2 * err
+            if e2 >= dy:
+                err += dy
+                x0 += sx
+            if e2 <= dx:
+                err += dx
+                y0 += sy
+        return True
+
+    def get_heuristic(self, wx, wy, wth=None):
+        gx, gy = self._world_to_grid(wx, wy)
+        if 0 <= gx < self.nx and 0 <= gy < self.ny:
+            if self.obs_map[gx][gy]:
+                return 1000.0, 1000.0
+            dist = self.dist_map[gx][gy]
+            pure_dist = dist
+            if dist == float('inf'):
+                euc = math.hypot(wx - self.goal_x, wy - self.goal_y)
+                big = max(euc * 3.0, 50.0)
+                return big, big
+            if dist != float('inf'):
+                # ONLY penalize final goal heading and lateral offset, because local gradient is too janky
+                if wth is not None and dist < 5.0:
+                    # As distance decreases, enforce alignment with the GOAL heading (0.0)
+                    goal_th = 0.0 
+                    diff_goal = abs(wth - goal_th)
+                    while diff_goal > math.pi: diff_goal -= 2 * math.pi
+                    diff_goal = abs(diff_goal)
+                    align_goal_diff = min(diff_goal, math.pi - diff_goal)
+                    
+                    # Weight increases as it gets closer to the goal
+                    weight = (5.0 - dist) * 2.0
+                    dist += align_goal_diff * weight
+
+                return dist, pure_dist
+        return 0.0, 0.0
+
+
 def plan_path(x0, y0, theta0, precomp_prim,
               use_rs=False, stats=None, no_corridor=False,
-              rs_expansion_radius=RS_EXPANSION_RADIUS,
+              rs_expansion_radius=2.5,
               # 可选目标区覆写（供两阶段规划第一阶段使用）
               _goal_xmin=1.92, _goal_xmax=2.25,
-              _goal_yhalf=0.18, _goal_thmax=ALIGN_GOAL_DYAW,
+              _goal_ymin=-0.18, _goal_ymax=0.18, _goal_thmax=ALIGN_GOAL_DYAW,
               _step_limit=1079, _expand_limit=150000, _prim_limit=30,
               _rs_expand=True,
               # Stage-1 专用简单启发函数（仅惩罚横向偏移）
               _heuristic_preapproach=False,
-              obstacles=None):
+              obstacles=None,
+              dijkstra_grid=None):
     """
     执行 A* 搜索
 
@@ -202,52 +399,40 @@ def plan_path(x0, y0, theta0, precomp_prim,
         # ── RS 解析终点扩展（一杆进洞）──────────────────────────────────
         # Stage-1 宽松目标时禁用（_rs_expand=False），避免误触发
         if _rs_expand:
-            rs_dist_to_goal = rs.rs_distance_pose(
-                cx, cy, cth,
-                RS_GOAL_X, RS_GOAL_Y, RS_GOAL_TH,
-                MIN_TURN_RADIUS
-            )
-            if rs_dist_to_goal < rs_expansion_radius:
-                import sys as _sys
-                print('[RS_EXPAND] node=({:.3f},{:.3f},{:.2f}deg) '
-                      'rs_dist={:.3f}m < {:.1f}m → try'.format(
-                          cx, cy, math.degrees(cth),
-                          rs_dist_to_goal, rs_expansion_radius),
-                      file=_sys.stderr)
-                rs_traj = rs.rs_sample_path(
+            euclidean_goal = math.hypot(cx - RS_GOAL_X, cy - RS_GOAL_Y)
+            if euclidean_goal < rs_expansion_radius + 1.0:
+                rs_dist_to_goal = rs.rs_distance_pose(
                     cx, cy, cth,
                     RS_GOAL_X, RS_GOAL_Y, RS_GOAL_TH,
-                    MIN_TURN_RADIUS, step=DT * 0.5
+                    MIN_TURN_RADIUS
                 )
-                if rs_traj:
-                    ex, ey, eth = rs_traj[-1]
-                    goal_reached = (ex <= 2.25
-                                    and abs(ey) <= 0.18
-                                    and abs(eth) <= ALIGN_GOAL_DYAW)
-                    collision_ok = _check_traj_collision(rs_traj, no_corridor)
-                    print('[RS_EXPAND] endpoint=({:.3f},{:.3f},{:.2f}deg) '
-                          'goal_ok={} collision_ok={}'.format(
-                              ex, ey, math.degrees(eth),
-                              goal_reached, collision_ok),
-                          file=_sys.stderr)
-                    if goal_reached and collision_ok:
-                        final_path = []
-                        curr = path_node
-                        while curr is not None:
-                            final_path.append(curr[1])
-                            curr = curr[0]
-                        final_path.reverse()
-                        if stats is not None:
-                            stats['expanded'] = expanded
-                            stats['elapsed_ms'] = round(
-                                (time.perf_counter() - t_start) * 1000.0, 1)
-                            stats['use_rs'] = use_rs
-                            stats['no_corridor'] = no_corridor
-                            stats['rs_expansion'] = True
-                        return True, final_path, rs_traj
-                else:
-                    import sys as _sys
-                    print('[RS_EXPAND] rs_sample_path returned None', file=_sys.stderr)
+                if rs_dist_to_goal < rs_expansion_radius:
+                    rs_traj = rs.rs_sample_path(
+                        cx, cy, cth,
+                        RS_GOAL_X, RS_GOAL_Y, RS_GOAL_TH,
+                        MIN_TURN_RADIUS, step=DT * 0.5
+                    )
+                    if rs_traj:
+                        ex, ey, eth = rs_traj[-1]
+                        goal_reached = (ex <= 2.25
+                                        and abs(ey) <= 0.18
+                                        and abs(eth) <= ALIGN_GOAL_DYAW)
+                        collision_ok = _check_traj_collision(rs_traj, no_corridor, obstacles=obstacles)
+                        if goal_reached and collision_ok:
+                            final_path = []
+                            curr = path_node
+                            while curr is not None:
+                                final_path.append(curr[1])
+                                curr = curr[0]
+                            final_path.reverse()
+                            if stats is not None:
+                                stats['expanded'] = expanded
+                                stats['elapsed_ms'] = round(
+                                    (time.perf_counter() - t_start) * 1000.0, 1)
+                                stats['use_rs'] = use_rs
+                                stats['no_corridor'] = no_corridor
+                                stats['rs_expansion'] = True
+                            return True, final_path, rs_traj
         # ────────────────────────────────────────────────────────────
 
         # Primitive 数量上限硬约束
@@ -255,10 +440,14 @@ def plan_path(x0, y0, theta0, precomp_prim,
             continue
 
         expanded += 1
-        if expanded % 20000 == 0:
-            print(f"[A* 规划中] 已展开 {expanded} 个节点，耗时: {(time.perf_counter() - t_start)*1000:.0f}ms...")
+        if expanded % 5000 == 0:
+            h_grid_str = f"{dijkstra_grid.get_heuristic(cx, cy, cth)[0]:.1f}" if dijkstra_grid else "0.0"
+            print(f"[A* 规划中] 已展开 {expanded} 个节点，f={f:.1f}, cx={cx:.2f}, cy={cy:.2f}, h_grid={h_grid_str}, h_rs={h_rs if 'h_rs' in locals() else 0:.1f}, 耗时: {(time.perf_counter() - t_start)*1000:.0f}ms...")
             
         if expanded > _expand_limit:
+            break
+        # Hard time limit: 20 seconds per plan_path call
+        if expanded % 2000 == 0 and (time.perf_counter() - t_start) > 20.0:
             break
             
         cos_th = math.cos(cth)
@@ -292,7 +481,7 @@ def plan_path(x0, y0, theta0, precomp_prim,
                     break
                         
                 # 3. 对齐命中终止判别 (Handover Region / pre-approach zone)
-                if _goal_xmin <= nx <= _goal_xmax and abs(ny) <= _goal_yhalf and abs(nth) <= _goal_thmax:
+                if _goal_xmin <= nx <= _goal_xmax and _goal_ymin <= ny <= _goal_ymax and abs(nth) <= _goal_thmax:
                     hit_goal = True
                     step_hit = i + 1
                     break
@@ -353,12 +542,15 @@ def plan_path(x0, y0, theta0, precomp_prim,
                 # ==== Heuristic ====
                 if _heuristic_preapproach:
                     # Stage-1 专用启发：同时惩罚横向偏移、x 越界、角度偏离
-                    abs_ny = ny if ny >= 0 else -ny
                     abs_nth = nth if nth >= 0 else -nth
                     
                     # 只有当角度已经较小时，才强力收缩 y；角度较大时，允许 y 在走廊内大幅度摆动以进行揉库对齐
-                    dyn_yhalf = _goal_yhalf if abs_nth <= _goal_thmax + 0.2 else 2.5
-                    h_y = max(0.0, abs_ny - dyn_yhalf) * 5.0
+                    if _goal_ymin <= ny <= _goal_ymax:
+                        h_y = 0.0
+                    else:
+                        h_y = min(abs(ny - _goal_ymin), abs(ny - _goal_ymax)) * 5.0
+                        if abs_nth > _goal_thmax + 0.2:
+                            h_y *= 0.2  # 角度大时放宽 y 惩罚
                     
                     # 只有当角度已经比较小时，才严格限制 x 不能太大；
                     # 若角度偏大，说明还需要空间揉库，放宽 x 的上限到 4.0
@@ -369,16 +561,46 @@ def plan_path(x0, y0, theta0, precomp_prim,
                         
                     h_th = max(0.0, abs_nth - _goal_thmax) * 3.0
                     h = h_y + h_x + h_th
-                    h_weight = 1.0
+                    
+                    # 如果有障碍物，Stage-1 也必须加上 Dijkstra 启发以避开死胡同！
+                    if dijkstra_grid is not None:
+                        h_grid_dist, _ = dijkstra_grid.get_heuristic(nx, ny, nth)
+                        h_grid = h_grid_dist / 0.25
+                        h = max(h, h_grid * 1.5)
+                    h_weight = 2.5  # 使用大权重 Weighted A* 打破局部极小值
                 elif use_rs:
-                    # RS 距离（米）除以最大速度（0.25 m/s）换算为时间下界（秒）
-                    rs_dist = rs.rs_distance_pose(
-                        nx, ny, nth,
-                        RS_GOAL_X, RS_GOAL_Y, RS_GOAL_TH,
-                        MIN_TURN_RADIUS
-                    )
-                    h = rs_dist / 0.25  # max forward speed = 0.25 m/s
-                    h_weight = 1.0
+                    if dijkstra_grid is not None:
+                        h_grid_dist, _ = dijkstra_grid.get_heuristic(nx, ny, nth)
+                        h_grid = h_grid_dist / 0.25
+                        
+                        if dijkstra_grid.line_of_sight(nx, ny, RS_GOAL_X, RS_GOAL_Y):
+                            # Clear path to goal: safe to use h_rs to penalize parallel parking
+                            # Optimize: only compute expensive h_rs when close to goal
+                            euclidean = math.hypot(nx - RS_GOAL_X, ny - RS_GOAL_Y)
+                            if euclidean < 6.0:
+                                rs_dist = rs.rs_distance_pose(
+                                    nx, ny, nth,
+                                    RS_GOAL_X, RS_GOAL_Y, RS_GOAL_TH,
+                                    MIN_TURN_RADIUS
+                                )
+                                h_rs = rs_dist / 0.25
+                                h = max(h_rs, h_grid * 1.2)
+                            else:
+                                h = h_grid * 1.2
+                        else:
+                            # Obstacle in the way: h_rs is a trap, rely solely on h_grid
+                            h = h_grid * 1.5
+                        h_weight = 2.5
+                    else:
+                        # RS 距离（米）除以最大速度（0.25 m/s）换算为时间下界（秒）
+                        rs_dist = rs.rs_distance_pose(
+                            nx, ny, nth,
+                            RS_GOAL_X, RS_GOAL_Y, RS_GOAL_TH,
+                            MIN_TURN_RADIUS
+                        )
+                        h_rs = rs_dist / 0.25  # max forward speed = 0.25 m/s
+                        h = h_rs
+                        h_weight = 1.0
                 else:
                     # 几何启发式：各系数经实测校准使 h ≈ 实际代价
                     dx_h = nx - 2.25 if nx > 2.25 else 0.0
@@ -443,7 +665,7 @@ def _replay_to_end(x0, y0, theta0, acts, precomp_prim):
     return cx, cy, cth
 
 
-def _k_turn_preposition(x0, y0, theta0, precomp_prim, no_corridor=False, obstacles=None):
+def _k_turn_preposition(x0, y0, theta0, precomp_prim, no_corridor=False, obstacles=None, dijkstra_grid=None):
     """
     确定性 K-turn 预定位（三阶段）：
       Phase-1   安全减 y：两步前瞻贪心，x 硬下限 X_FLOOR_SAFE=2.05m。
@@ -474,10 +696,54 @@ def _k_turn_preposition(x0, y0, theta0, precomp_prim, no_corridor=False, obstacl
                 return False, px, py, pth
         return True, ex, ey, eth
 
+    def _get_safe_y_range():
+        y_min = -PREAPPROACH_Y_MAX
+        y_max = PREAPPROACH_Y_MAX
+        if obstacles:
+            for obs in obstacles:
+                min_x, max_x, min_y, max_y = obs
+                # Ensure the obstacle is between the goal and our CURRENT X (or starting X)
+                if max_x >= 2.1 and min_x <= max(cx, 4.0):
+                    min_y_obs = min_y - 0.52
+                    max_y_obs = max_y + 0.52
+                    if min_y_obs < y_max and max_y_obs > y_min:
+                        r1_ok = y_min < min_y_obs
+                        r2_ok = max_y_obs < y_max
+                        if r1_ok and not r2_ok:
+                            y_max = min_y_obs
+                        elif r2_ok and not r1_ok:
+                            y_min = max_y_obs
+                        elif r1_ok and r2_ok:
+                            if abs(cy - min_y_obs) < abs(cy - max_y_obs):
+                                y_max = min_y_obs
+                            else:
+                                y_min = max_y_obs
+                        else:
+                            if abs(cy - min_y_obs) < abs(cy - max_y_obs):
+                                y_max = min_y_obs
+                                y_min = min_y_obs - 0.5
+                            else:
+                                y_min = max_y_obs
+                                y_max = max_y_obs + 0.5
+        return y_min, y_max
+
+    def _y_dist(y_val):
+        y_min, y_max = _get_safe_y_range()
+        if y_val < y_min: return y_min - y_val
+        elif y_val > y_max: return y_val - y_max
+        return 0.0
+
     def _score_y(ex, ey, eth, gear=None, prev_gear=None, w_x=1.0):
-        y_over = max(0.0, abs(ey) - PREAPPROACH_Y_MAX) * 10.0
-        # 如果 y 已经在比较小的范围内，不用过分强求它趋近于 0，给车身对齐留出容错空间
-        y_raw  = max(0.0, abs(ey) - 0.1) * 2.0
+        y_min, y_max = _get_safe_y_range()
+        
+        if ey > y_max: y_over = (ey - y_max) * 10.0
+        elif ey < y_min: y_over = (y_min - ey) * 10.0
+        else: y_over = 0.0
+        
+        y_raw = 0.0
+        if not (y_min <= ey <= y_max):
+            y_raw = min(abs(ey - y_max), abs(ey - y_min)) * 2.0
+            
         x_pen  = max(0.0, PREAPPROACH_X_MIN - ex) * w_x * 5.0
         
         # 若角度依然偏大，强烈惩罚靠近目标区（防止进入 x 小于 3.0 的死胡同）
@@ -486,15 +752,24 @@ def _k_turn_preposition(x0, y0, theta0, precomp_prim, no_corridor=False, obstacl
             x_pen += max(0.0, 3.2 - ex) * w_x * 3.0
             
         # 对 x 的远端惩罚改为温和渐进式，促使它在能够倒进去的前提下尽量选择紧凑弧线
-        x_over = max(0.0, ex - 3.2) * 2.0  # 提升：增强远端惩罚
+        # 使用 max(3.2, x0 + 0.5) 作为起罚点，避免当 x0 已经很大时惩罚导致死锁
+        ref_x = max(3.2, cx + 0.5) if 'x0' not in locals() else max(3.2, x0 + 1.0)
+        x_over = max(0.0, ex - ref_x) * 2.0  # 提升：增强远端惩罚
         
-        # 增加倒车时的引导：如果我们在 y>0 的上方且需要回正(eth=0)，我们倒车时最好 eth 为负，让车头偏向下方，否则会让车头偏向上方，导致偏离
-        align_weight = 5.0 if abs(ey) < 1.5 else 0.05
+        # 增加倒车时的引导：如果我们在 safe zone 外，放宽角度惩罚以允许转向；在 safe zone 内时才强行对准目标
+        align_weight = 10.0 if (y_min <= ey <= y_max) else 0.5
         th_pen = max(0.0, abs(eth) - PREAPPROACH_TH_MAX) * align_weight
-        if ey > 0 and eth > 0 and gear == 'R':
-            th_pen += 2.0 * abs(eth)
-        if ey < 0 and eth < 0 and gear == 'R':
-            th_pen += 2.0 * abs(eth)
+        
+        # 防止车辆在走廊边缘倒车时朝向危险方向（导致即将撞墙），并且在安全区内强烈鼓励绝对回正！
+        if gear == 'R':
+            if ey - y_min < 0.3 and eth < 0:
+                th_pen += 20.0 * abs(eth)  # 靠近下边缘时，严禁倒车向右偏（这会导致 y 继续减小）
+            if y_max - ey < 0.3 and eth > 0:
+                th_pen += 20.0 * abs(eth)  # 靠近上边缘时，严禁倒车向左偏（这会导致 y 继续增大）
+                
+            # 如果在安全区内，强烈鼓励完美回正 (eth == 0)
+            if y_min + 0.1 <= ey <= y_max - 0.1:
+                th_pen += 15.0 * abs(eth)
         
         # 换挡惩罚下调至2.0，足以防止原地锯齿揉库，又不会不敢换挡
         gear_pen = 0.0 if prev_gear is None or gear == prev_gear else 1.0  # 降低：允许果断换挡
@@ -502,8 +777,11 @@ def _k_turn_preposition(x0, y0, theta0, precomp_prim, no_corridor=False, obstacl
 
     def _check_goal():
         # Require more X distance if lateral error Y is larger, to give Stage-2 enough room
-        required_x_min = max(PREAPPROACH_X_MIN, 2.3 + 2.0 * abs(cy))
-        return (abs(cy) <= PREAPPROACH_Y_MAX
+        y_min, y_max = _get_safe_y_range()
+        target_y = y_min if abs(cy - y_min) < abs(cy - y_max) else y_max
+        required_x_min = max(PREAPPROACH_X_MIN, 2.3 + 2.0 * abs(cy - target_y))
+
+        return (y_min <= cy <= y_max
                 and required_x_min <= cx <= PREAPPROACH_X_MAX
                 and abs(cth) <= PREAPPROACH_TH_MAX)
 
@@ -537,12 +815,12 @@ def _k_turn_preposition(x0, y0, theta0, precomp_prim, no_corridor=False, obstacl
             acts.append(best_p0)
 
     # ── Phase-1：安全减 y（两步前瞻，x >= X_FLOOR_SAFE） ─────────────
-    best_abs_y  = abs(cy)
+    best_abs_y  = _y_dist(cy)
     stagnate_p1 = 0
     for _ in range(150):
         if _check_goal():
             return True, acts, cx, cy, cth
-        lookahead_2 = abs(cy) > PREAPPROACH_Y_MAX + 0.06
+        lookahead_2 = _y_dist(cy) > 0.06
         best_first = best_state = None
         prev_gear = acts[-1][0] if acts else None
         best_score = float('inf')
@@ -570,16 +848,17 @@ def _k_turn_preposition(x0, y0, theta0, precomp_prim, no_corridor=False, obstacl
         if best_first is None:
             break
         cx, cy, cth = best_state; acts.append(best_first)
-        if abs(cy) < best_abs_y - 1e-3:
-            best_abs_y = abs(cy); stagnate_p1 = 0
+        curr_y_dist = _y_dist(cy)
+        if curr_y_dist < best_abs_y - 1e-3:
+            best_abs_y = curr_y_dist; stagnate_p1 = 0
         else:
             stagnate_p1 += 1
             if stagnate_p1 >= 15:
                 break
 
     # ── Phase-1b：紧急减 y（一步贪心，x >= X_FLOOR_EMG，仅当 y 仍大时） ─
-    if abs(cy) > PREAPPROACH_Y_MAX - 0.02:
-        best_abs_y = abs(cy); stagnate_emg = 0
+    if _y_dist(cy) > 0.02:
+        best_abs_y = _y_dist(cy); stagnate_emg = 0
         for _ in range(60):
             if _check_goal():
                 return True, acts, cx, cy, cth
@@ -595,15 +874,16 @@ def _k_turn_preposition(x0, y0, theta0, precomp_prim, no_corridor=False, obstacl
             if best_first is None:
                 break
             cx, cy, cth = best_state; acts.append(best_first)
-            if abs(cy) < best_abs_y - 1e-3:
-                best_abs_y = abs(cy); stagnate_emg = 0
+            curr_y_dist = _y_dist(cy)
+            if curr_y_dist < best_abs_y - 1e-3:
+                best_abs_y = curr_y_dist; stagnate_emg = 0
             else:
                 stagnate_emg += 1
                 if stagnate_emg >= 15:
                     break
 
     # ── Phase-2：x 恢复——倒退使 x >= PREAPPROACH_X_MIN ──────────────────
-    for _ in range(50):
+    for _ in range(250):
         if _check_goal():
             break
         # if cx >= PREAPPROACH_X_MAX - 1.0:
@@ -621,8 +901,15 @@ def _k_turn_preposition(x0, y0, theta0, precomp_prim, no_corridor=False, obstacl
             if ex_r >= PREAPPROACH_X_MAX: continue # 不允许退过界
             
             x_lack = max(0.0, PREAPPROACH_X_MIN - ex_r) * 5.0
-            y_over = max(0.0, abs(ey_r) - PREAPPROACH_Y_MAX) * 10.0
-            y_raw  = max(0.0, abs(ey_r) - 0.1) * 2.0
+            y_min, y_max = _get_safe_y_range()
+            if ey_r > y_max: y_over = (ey_r - y_max) * 10.0
+            elif ey_r < y_min: y_over = (y_min - ey_r) * 10.0
+            else: y_over = 0.0
+            
+            y_raw = 0.0
+            if not (y_min <= ey_r <= y_max):
+                y_raw = min(abs(ey_r - y_max), abs(ey_r - y_min)) * 2.0
+                
             th_pen = max(0.0, abs(eth_r) - PREAPPROACH_TH_MAX) * 2.0
             
             # 倒车时对角度的调整
@@ -644,8 +931,9 @@ def _k_turn_preposition(x0, y0, theta0, precomp_prim, no_corridor=False, obstacl
 
 def plan_path_robust(x0, y0, theta0, precomp_prim,
                      use_rs=False, stats=None, no_corridor=False,
-                     rs_expansion_radius=RS_EXPANSION_RADIUS,
-                     obstacles=None):
+                     rs_expansion_radius=2.5,
+                     obstacles=None,
+                     dijkstra_grid=None):
     """
     鲁棒两阶段规划器：自动处理大侧偏 / 大偏航起点。
 
@@ -669,6 +957,17 @@ def plan_path_robust(x0, y0, theta0, precomp_prim,
             stats['two_stage'] = False
             stats['out_of_range'] = True
         return False, None, None
+        
+    if dijkstra_grid is None and use_rs and obstacles:
+        dijkstra_grid = DijkstraGrid(RS_GOAL_X, RS_GOAL_Y)
+        dijkstra_grid.build_map(obstacles, start_x=x0, start_y=y0)
+        
+    fast_obstacles = None
+    if obstacles:
+        fast_obstacles = []
+        for obs in obstacles:
+            ox, oy, ow, oh = obs['x'], obs['y'], obs['w'], obs['h']
+            fast_obstacles.append((min(ox, ox + ow), max(ox, ox + ow), min(oy, oy + oh), max(oy, oy + oh)))
 
     # 若离目标太近，哪怕一点侧向偏移也无法直接开过去，必须走两阶段拉开空间
     if abs(x0) < 4.0 and abs(y0) > 0.2:
@@ -677,16 +976,31 @@ def plan_path_robust(x0, y0, theta0, precomp_prim,
         needs_two_stage = (abs(y0) > TWO_STAGE_Y_THRESH
                            or abs(theta0) > TWO_STAGE_TH_THRESH)
 
+    # 有障碍物时，一律走两阶段。单阶段 A* 在有障碍物时 RS 扩展会甩回碰撞，几乎无法收敛。
+    if fast_obstacles:
+        needs_two_stage = True
+
+    # 构建 2D Dijkstra 启发式网格（如果使用 RS）
+    if dijkstra_grid is None and use_rs and obstacles:
+        dijkstra_grid = DijkstraGrid(RS_GOAL_X, RS_GOAL_Y)
+        dijkstra_grid.build_map(obstacles, start_x=x0, start_y=y0)
+
     if not needs_two_stage:
         return plan_path(x0, y0, theta0, precomp_prim,
                          use_rs=use_rs, stats=stats,
                          no_corridor=no_corridor,
                          rs_expansion_radius=rs_expansion_radius,
-                         obstacles=obstacles)
+                         obstacles=obstacles,
+                         dijkstra_grid=dijkstra_grid)
 
     import time as _time
     import math as _math
     t1 = _time.perf_counter()
+    t_robust = t1
+
+    # 提前标记两阶段，防止超时中断后 stats 里没有此字段
+    if stats is not None:
+        stats['two_stage'] = True
 
     mx, my, mth = x0, y0, theta0
     phase0_acts = []
@@ -793,125 +1107,207 @@ def plan_path_robust(x0, y0, theta0, precomp_prim,
             phase0_acts.append(best_act)
             mx, my, mth = best_st
 
-    # ── Stage-1：预定位（y 大偏差优先用 A*，θ 大偏差用贪心）────────────────
+    # ── Stage-1：预定位（逐障碍物穿越 + K-turn + A*）────────────────
     ok1 = False
     acts1 = []
     stage1_mode = 'none'
     stage1_goal_step_hit = None
 
-    # y 偏差超出预接近区或角度偏差较大时，优先使用 Stage-1 A* 进入 pre-approach zone。
-    # 这能避免贪心失败后回退到慢速单阶段 A*（7~12s）。
-    if abs(my) > PREAPPROACH_Y_MAX or phase0_acts or abs(mth) > 0.5:
-        st1 = {}
-        # 为了让 Phase-0 后的位姿更容易通过 Stage-1 A*，
-        # 在 _heuristic_preapproach 中对 x 和 theta 的要求可以稍微放宽，
-        # 我们用 _step_limit 和 _prim_limit 保证它的运行速度
-        
-        # 提取 Stage-1 时如果起点太远，稍微增加搜索深度
-        prim_limit_st1 = 40 if phase0_acts or abs(mth) > 0.5 else 18
-        # 但是对于原本就不需要 phase0 的用例，尽量保持原来的 A* 参数，以免原来成功的变成失败
-        expand_limit_st1 = 80000 if phase0_acts or abs(mth) > 0.5 else 12000
-        step_limit_st1 = 2000 if phase0_acts or abs(mth) > 0.5 else 700
-        
-        # 修复回归：对于完全不需要 Phase0 且角度很小的情况，直接跳过 Stage-1
-        # 仅在 y 大于一定程度且不极度偏离时才尝试 A* 预接近
-        # 若 |y| > 3.0，A* 非常容易陷入庞大搜索空间失败，不如直接交由贪心预定位兜底
-        # 另外，如果起点的 x 比较小（离目标很近）但横向 y 又很大，A* 会因为需要倒车拉开空间而陷入局部极小值，
-        # 此时直接交给擅长倒车揉库的贪心 K-turn 处理。
-        if (phase0_acts or abs(my) > 1.2 or abs(mth) > 0.5) and abs(my) <= 3.0 and mx >= 4.0:
-            ok1, acts1, _ = plan_path(
+    # K-turn 结果暂存（供 fallback 使用）
+    mx2, my2, mth2 = mx, my, mth
+    acts1_greedy = []
+
+    # y 偏差超出预接近区或角度偏差较大时，优先使用贪心 K-turn 兜底。
+    if phase0_acts or abs(my) > PREAPPROACH_Y_MAX or abs(mth) > 0.5 or (fast_obstacles is not None):
+        ok1_greedy, acts1_greedy, mx2, my2, mth2 = _k_turn_preposition(
+            mx, my, mth, precomp_prim, no_corridor=no_corridor, obstacles=fast_obstacles, dijkstra_grid=dijkstra_grid)
+
+        if ok1_greedy and len(acts1_greedy) > 0:
+            stage1_mode = 'greedy_kturn + astar'
+            acts1.extend(acts1_greedy)
+            mx, my, mth = mx2, my2, mth2
+
+        # ── 逐障碍物穿越（Sequential Obstacle Clearance）──
+        # 将障碍物按 min_x 降序排列，从最远的开始逐个穿过。
+        # 每个子阶段只需穿过一个障碍物，大幅降低搜索难度。
+        if fast_obstacles and (mx > 2.5 or abs(my) > PREAPPROACH_Y_MAX):
+            blocking_obs = []
+            for obs in fast_obstacles:
+                obs_min_x = obs[0]
+                if obs_min_x < mx + 0.5 and obs[1] >= PREAPPROACH_X_MIN:
+                    blocking_obs.append(obs)
+            blocking_obs.sort(key=lambda o: o[0], reverse=True)
+
+            sub_ok = True
+            for sub_idx, (obs_min_x, obs_max_x, obs_min_y, obs_max_y) in enumerate(blocking_obs):
+                sub_xmax = max(PREAPPROACH_X_MIN, obs_min_x - 0.3)
+                if mx <= sub_xmax + 0.1:
+                    continue
+
+                sub_ymin = -3.5
+                sub_ymax = 3.5
+                sub_thmax = _math.pi * 0.5
+
+                dist_sub = max(0.0, mx - sub_xmax)
+                expand_sub = 120000 + int(dist_sub * 30000)
+                prim_sub = 80 + int(dist_sub / 0.05)
+                step_sub = 3000 + int(dist_sub * 300)
+
+                if dijkstra_grid is None:
+                    sub_dg = DijkstraGrid(RS_GOAL_X, RS_GOAL_Y, grid_res=0.15, inflate_radius=0.5)
+                    sub_dg.build_map(obstacles, start_x=mx, start_y=my)
+                else:
+                    sub_dg = dijkstra_grid
+
+                st_sub = {}
+                ok_sub, acts_sub, _ = plan_path(
+                    mx, my, mth, precomp_prim,
+                    use_rs=False, stats=st_sub, no_corridor=no_corridor,
+                    _goal_xmin=PREAPPROACH_X_MIN,
+                    _goal_xmax=sub_xmax,
+                    _goal_ymin=sub_ymin,
+                    _goal_ymax=sub_ymax,
+                    _goal_thmax=sub_thmax,
+                    _step_limit=step_sub,
+                    _expand_limit=expand_sub,
+                    _prim_limit=prim_sub,
+                    _rs_expand=False,
+                    _heuristic_preapproach=True,
+                    obstacles=fast_obstacles,
+                    dijkstra_grid=sub_dg
+                )
+                if ok_sub:
+                    acts1.extend(acts_sub or [])
+                    gp = st_sub.get('goal_pos')
+                    if gp:
+                        mx, my, mth = gp
+                    else:
+                        mx, my, mth = _replay_to_end(mx, my, mth, acts_sub, precomp_prim)
+                    stage1_goal_step_hit = st_sub.get('goal_step_hit')
+                else:
+                    sub_ok = False
+                    break
+
+            if sub_ok:
+                ok1 = True
+                stage1_mode = 'sequential_obs_clear'
+
+        # 单障碍物或无障碍物时的原始 Stage-1 逻辑
+        if not ok1 and (mx > 2.5 or abs(my) > PREAPPROACH_Y_MAX or fast_obstacles):
+            st1 = {}
+            safe_y_min, safe_y_max = -PREAPPROACH_Y_MAX, PREAPPROACH_Y_MAX
+            dynamic_xmax = PREAPPROACH_X_MAX
+            if fast_obstacles:
+                for min_x, max_x, min_y, max_y in fast_obstacles:
+                    if max_x >= PREAPPROACH_X_MIN and min_x <= max(mx, 4.0):
+                        dynamic_xmax = min(dynamic_xmax, max(PREAPPROACH_X_MIN, min_x - 0.3))
+
+            dist_x_st1 = max(0.0, mx - dynamic_xmax)
+            prim_limit_st1 = 50 + int(dist_x_st1 / 0.08)
+            base_expand = 80000 if phase0_acts or abs(mth) > 0.5 else 40000
+            expand_limit_st1 = base_expand + int(dist_x_st1 * 15000)
+            step_limit_st1 = 2000 + int(dist_x_st1 * 200)
+
+            ok1, acts1_astar, _ = plan_path(
                 mx, my, mth, precomp_prim,
-                use_rs=False,
-                stats=st1,
-                no_corridor=no_corridor,
+                use_rs=False, stats=st1, no_corridor=no_corridor,
                 _goal_xmin=PREAPPROACH_X_MIN,
-                _goal_xmax=PREAPPROACH_X_MAX,
-                _goal_yhalf=PREAPPROACH_Y_MAX,
+                _goal_xmax=dynamic_xmax,
+                _goal_ymin=safe_y_min,
+                _goal_ymax=safe_y_max,
                 _goal_thmax=PREAPPROACH_TH_MAX,
-                # Phase-0 后位姿可能离目标较远，适当提高 Stage-1 搜索深度以增加成功率
                 _step_limit=step_limit_st1,
                 _expand_limit=expand_limit_st1,
                 _prim_limit=prim_limit_st1,
                 _rs_expand=False,
                 _heuristic_preapproach=True,
-                obstacles=obstacles
+                obstacles=fast_obstacles,
+                dijkstra_grid=dijkstra_grid
             )
             if ok1:
+                acts1.extend(acts1_astar or [])
                 goal_pos = st1.get('goal_pos')
                 stage1_goal_step_hit = st1.get('goal_step_hit')
                 if goal_pos is not None:
                     mx, my, mth = goal_pos
                 else:
-                    mx, my, mth = _replay_to_end(mx, my, mth, acts1, precomp_prim)
+                    mx, my, mth = _replay_to_end(mx, my, mth, acts1_astar, precomp_prim)
                 stage1_mode = 'astar_preapproach'
-        else:
-            # 对于不需要 phase0 且 y 偏差也不是极端大的情况，
-            # 我们不需要走放宽条件的 Stage1 A*，而是直接把它交给最后的单阶段/贪心处理，
-            # 这里设置 ok1=False 是为了让它 fallback
-            ok1 = False
-
-    # A* 预接近失败或 θ-only 大偏差时，使用贪心 K-turn 兜底。
-    if not ok1:
-        ok1, acts1_greedy, mx2, my2, mth2 = _k_turn_preposition(
-            mx, my, mth, precomp_prim, no_corridor=no_corridor, obstacles=obstacles)
-        if ok1:
-            stage1_mode = 'greedy_kturn'
-            acts1 = acts1_greedy
-            mx, my, mth = mx2, my2, mth2
-        else:
-            # 贪心已显著改善但未达硬阈值时，允许进入 Stage-2 继续精对准，
-            # 避免回退到慢速单阶段 Direct A*。
-            # 阈值再次松绑：只要把 y 压进 1.2m，Stage-2 的 A* 也能算出来，且比从头算快
-            improved_enough = (abs(my2) <= PREAPPROACH_Y_MAX + 0.8 and
-                               abs(my2) <= abs(my) - 0.08 and
-                               abs(mth2) <= 1.2)  # 要求角度也大体对齐
-            if improved_enough and acts1_greedy:
-                ok1 = True
-                stage1_mode = 'greedy_kturn_partial'
-                acts1 = acts1_greedy
-                mx, my, mth = mx2, my2, mth2
+            else:
+                improved_enough = (abs(my2) <= PREAPPROACH_Y_MAX + 0.8 and
+                                   abs(my2) <= abs(y0) - 0.08 and
+                                   abs(mth2) <= 1.2)
+                if improved_enough and acts1_greedy:
+                    ok1 = True
+                    stage1_mode = 'greedy_kturn_partial'
+                    acts1 = acts1_greedy
+                    mx, my, mth = mx2, my2, mth2
 
     t1_ms = round((_time.perf_counter() - t1) * 1000.0, 1)
 
     if not ok1:
-        # Stage-1 全部失败（且贪心也没救回来）：如果经过了 Phase-0，说明情况极度复杂，
-        # 且单阶段 A* 也注定失败。为了避免漫长的必定失败的尝试，我们直接返回失败。
-        # 如果没有 Phase-0，则说明是简单的场景被误判为需要两阶段（如 0度但 y 略大），
-        # 此时可以用单阶段 A* 兜底。
-        if phase0_acts:
-            if stats is not None:
-                stats['two_stage'] = True
-                stats['elapsed_ms'] = t1_ms
-            return False, None, None
-            
+        # Stage-1 失败：总是尝试 fallback 单阶段 A*（不再因 phase0_acts 提前放弃）
         st_fallback = {}
         ok_fallback, acts_fallback, traj_fallback = plan_path(x0, y0, theta0, precomp_prim,
                                                               use_rs=use_rs, stats=st_fallback,
                                                               no_corridor=no_corridor,
                                                               rs_expansion_radius=rs_expansion_radius,
-                                                              obstacles=obstacles)
-        if ok_fallback:
-            if stats is not None:
-                for k, v in st_fallback.items():
-                    stats[k] = v
-                stats['two_stage'] = False
+                                                              obstacles=obstacles,
+                                                              dijkstra_grid=dijkstra_grid)
+        if stats is not None:
+            for k, v in st_fallback.items():
+                stats[k] = v
+            stats['two_stage'] = True
+            stats['elapsed_ms'] = round((_time.perf_counter() - t_robust) * 1000.0, 1)
         return ok_fallback, acts_fallback, traj_fallback
 
     # ── Stage-2：精准对准托盘 ────────────────────────────────────────
     st2 = {}
+    
+    dist_x = max(0.0, mx - 2.1)
+    dynamic_prim_limit = 30 + int(dist_x / 0.1)
+    
+    # ── Stage-1.5: Y 对齐（如果有障碍物且 |y| 太大，RS 曲线会甩回碰撞）──
+    # 从 Stage-1 终点出发，在无障碍物环境下把 y 收敛到 ±0.05，
+    # 这样后续 Stage-2 的 RS 曲线不会甩回障碍物区域。
+    stage15_acts = []
+    if fast_obstacles and abs(my) > 0.08:
+        st15 = {}
+        # 动态搜索预算：距离越远越需要更多搜索
+        s15_dist = max(0.0, mx - 2.1)
+        s15_expand = max(80000, int(s15_dist * 20000))
+        s15_prim = max(60, int(s15_dist / 0.08))
+        ok15, acts15, _ = plan_path(
+            mx, my, mth, precomp_prim,
+            use_rs=False, stats=st15, no_corridor=no_corridor,
+            _goal_xmin=1.92, _goal_xmax=max(mx + 1.0, 3.5),
+            _goal_ymin=-0.08, _goal_ymax=0.08,
+            _goal_thmax=0.25,
+            _step_limit=3000, _expand_limit=s15_expand, _prim_limit=s15_prim,
+            _rs_expand=False, _heuristic_preapproach=True,
+            obstacles=None, dijkstra_grid=None
+        )
+        if ok15:
+            stage15_acts = acts15 if acts15 else []
+            goal_pos = st15.get('goal_pos')
+            if goal_pos:
+                mx, my, mth = goal_pos
+            else:
+                mx, my, mth = _replay_to_end(mx, my, mth, stage15_acts, precomp_prim)
+    
+    # Stage-2: 精准到位 — 此时无障碍物约束，RS expansion 自由工作
     ok2, acts2, rs_traj = plan_path(
         mx, my, mth, precomp_prim,
-        use_rs=use_rs,
-        stats=st2,
-        no_corridor=no_corridor,
-        rs_expansion_radius=rs_expansion_radius,
-        obstacles=obstacles
+        use_rs=use_rs, stats=st2, no_corridor=no_corridor,
+        rs_expansion_radius=max(rs_expansion_radius, 4.0),
+        _prim_limit=dynamic_prim_limit,
+        obstacles=None, dijkstra_grid=None
     )
 
     total_ms = round((time.perf_counter() - t_robust) * 1000.0, 1)
 
     if ok2:
-        final_acts = phase0_acts + (acts1 or []) + (acts2 or [])
+        final_acts = phase0_acts + (acts1 or []) + stage15_acts + (acts2 or [])
         if stats is not None:
             stats['expanded']    = st2.get('expanded', 0)
             stats['elapsed_ms']  = total_ms
@@ -936,7 +1332,8 @@ def plan_path_robust(x0, y0, theta0, precomp_prim,
                      use_rs=use_rs, stats=stats,
                      no_corridor=no_corridor,
                      rs_expansion_radius=rs_expansion_radius,
-                     obstacles=obstacles)
+                     obstacles=fast_obstacles,
+                     dijkstra_grid=dijkstra_grid)
 
 
 def simulate_path(x0, y0, theta0, actions, precomp_prim):
