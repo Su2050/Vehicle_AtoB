@@ -375,6 +375,41 @@ def plan_2d_fallback(dijkstra_grid, start_x, start_y, start_th,
     if best_traj is not None:
         return True, best_traj
 
+    # Retry with reduced inflation — opens paths blocked by conservative 0.7m buffer
+    if obstacles:
+        candidates2 = []
+        alt2 = _dijkstra_2d_path(
+            start_x, start_y, RS_GOAL_X, RS_GOAL_Y, obstacles,
+            inflate_radius=0.2)
+        if len(alt2) >= 2:
+            candidates2.append(alt2)
+        for sign in (1.0, -1.0):
+            px = start_x - sign * _HEADING_PULL_DIST * math.cos(start_th)
+            py = start_y - sign * _HEADING_PULL_DIST * math.sin(start_th)
+            if px < 0.0 or px > 9.5 or py < -5.5 or py > 5.5:
+                continue
+            pull2 = _dijkstra_2d_path(
+                px, py, RS_GOAL_X, RS_GOAL_Y, obstacles,
+                inflate_radius=0.2)
+            if len(pull2) >= 2:
+                candidates2.append([(start_x, start_y)] + pull2)
+        fine_spacings = [spacing, spacing * 0.6, spacing * 0.3]
+        for raw in candidates2:
+            for sp in fine_spacings:
+                wps = _simplify_path(raw, min_spacing=sp)
+                if len(wps) < 2:
+                    continue
+                ok, traj = _stitch_waypoints(
+                    wps, start_th, collision_fn, max_rs_paths)
+                if ok:
+                    tlen = _trajectory_length(traj)
+                    if tlen < best_len:
+                        best_traj = traj
+                        best_len = tlen
+
+        if best_traj is not None:
+            return True, best_traj
+
     return False, None
 
 
