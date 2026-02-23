@@ -142,6 +142,35 @@ def _path_goes_behind_wall(traj):
     return False
 
 
+_PATH_LENGTH_RATIO_MAX = 3.0
+_PATH_LATERAL_EXTRA_MAX = 2.0
+
+
+def _path_is_unreasonable(traj, sx, sy):
+    """Reject paths with excessive length or lateral deviation.
+    Catches L1/L1.5 arcs that technically avoid the wall but detour wildly.
+    """
+    if not traj or len(traj) < 3:
+        return False
+    direct = math.hypot(sx - RS_GOAL_X, sy - RS_GOAL_Y)
+    if direct < 0.5:
+        return False
+    traj_len = 0.0
+    max_abs_y = abs(sy)
+    for i in range(1, len(traj)):
+        traj_len += math.hypot(traj[i][0] - traj[i - 1][0],
+                               traj[i][1] - traj[i - 1][1])
+        ay = abs(traj[i][1])
+        if ay > max_abs_y:
+            max_abs_y = ay
+    if traj_len > direct * _PATH_LENGTH_RATIO_MAX:
+        return True
+    y_bound = max(abs(sy), abs(RS_GOAL_Y)) + _PATH_LATERAL_EXTRA_MAX
+    if max_abs_y > y_bound:
+        return True
+    return False
+
+
 def _try_milestone_rs_bypass(sx, sy, sth, obstacles, collision_fn,
                               fast_obstacles=None, no_corridor=False,
                               max_paths=8, max_milestones=20):
@@ -412,7 +441,8 @@ def plan_path_robust_obs_v2(x0, y0, theta0, precomp_prim,
         rs_stats = {}
         ok, acts, traj = plan_path_pure_rs(x0, y0, theta0,
                                            collision_fn=coll_fn, stats=rs_stats)
-        if ok and not _path_goes_behind_wall(traj):
+        if ok and not _path_goes_behind_wall(traj) \
+                and not _path_is_unreasonable(traj, x0, y0):
             stats.update(rs_stats)
             stats['level'] = 'L1_pure_rs'
             return True, acts, traj
@@ -423,7 +453,8 @@ def plan_path_robust_obs_v2(x0, y0, theta0, precomp_prim,
             x0, y0, theta0, obstacles, coll_fn,
             fast_obstacles=fast_obstacles, no_corridor=no_corridor,
             max_paths=10, max_milestones=20)
-        if bypass_ok and not _path_goes_behind_wall(bypass_traj):
+        if bypass_ok and not _path_goes_behind_wall(bypass_traj) \
+                and not _path_is_unreasonable(bypass_traj, x0, y0):
             total_ms = round((time.perf_counter() - t_robust) * 1000.0, 1)
             stats.update(
                 expanded=0, elapsed_ms=total_ms,
