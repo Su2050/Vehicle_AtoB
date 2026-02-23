@@ -183,8 +183,7 @@ def _try_milestone_rs_bypass(sx, sy, sth, obstacles, collision_fn,
     if not milestones:
         return False, None
 
-    coll_relaxed = lambda nx, ny, nth: check_collision(
-        nx, ny, nth, no_corridor=True, obstacles=fast_obstacles)
+    coll_relaxed = collision_fn
 
     step = DT * 0.5
     best_traj = None
@@ -506,8 +505,7 @@ def plan_path_robust_obs_v2(x0, y0, theta0, precomp_prim,
 
     # ── Level-1.8: 2D skeleton + RS stitching (fast, before A*) ──
     if obstacles:
-        coll_relaxed = lambda nx, ny, nth: check_collision(
-            nx, ny, nth, no_corridor=True, obstacles=fast_obstacles)
+        coll_relaxed = coll_fn
         starts_2d = [(mx, my, mth, phase0_acts + acts1 + stage15_acts)]
         if (mx, my) != (x0, y0):
             starts_2d.append((x0, y0, theta0, []))
