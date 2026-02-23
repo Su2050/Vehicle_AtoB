@@ -312,18 +312,27 @@ def _stitch_waypoints(waypoints, start_th, collision_fn, max_rs_paths):
     return False, None
 
 
+def _trajectory_length(traj):
+    """Compute total geometric length of a trajectory [(x,y,th), ...]."""
+    total = 0.0
+    for i in range(1, len(traj)):
+        dx = traj[i][0] - traj[i - 1][0]
+        dy = traj[i][1] - traj[i - 1][1]
+        total += math.hypot(dx, dy)
+    return total
+
+
+_HEADING_PULL_DIST = 1.5
+
+
 def plan_2d_fallback(dijkstra_grid, start_x, start_y, start_th,
                      collision_fn, spacing=1.5, max_rs_paths=12,
                      obstacles=None):
     """
-    2D skeleton fallback planner.
+    2D skeleton fallback planner with heading-aware candidate selection.
 
-    1. Trace a 2D path on the Dijkstra grid from start toward goal
-    2. Simplify into waypoints
-    3. Stitch consecutive waypoints with RS segments
-    4. If RS stitching fails, retry with wider-inflation Dijkstra path
-
-    Returns (success, trajectory) where trajectory is [(x,y,th), ...].
+    Generates multiple 2D candidate paths including heading-biased variants,
+    stitches all with RS segments, and returns the shortest feasible trajectory.
     """
     raw_path = _trace_gradient_path(dijkstra_grid, start_x, start_y)
 
@@ -337,7 +346,19 @@ def plan_2d_fallback(dijkstra_grid, start_x, start_y, start_th,
         if len(alt) >= 2:
             candidates.append(alt)
 
+    for sign in (1.0, -1.0):
+        px = start_x + sign * _HEADING_PULL_DIST * math.cos(start_th)
+        py = start_y + sign * _HEADING_PULL_DIST * math.sin(start_th)
+        if px < 0.0 or px > 9.5 or py < -5.5 or py > 5.5:
+            continue
+        pull_path = _dijkstra_2d_path(
+            px, py, RS_GOAL_X, RS_GOAL_Y, obstacles)
+        if len(pull_path) >= 2:
+            candidates.append([(start_x, start_y)] + pull_path)
+
     spacings = [spacing, spacing * 1.5, spacing * 0.6, spacing * 2.0]
+    best_traj = None
+    best_len = float('inf')
     for raw in candidates:
         for sp in spacings:
             wps = _simplify_path(raw, min_spacing=sp)
@@ -346,7 +367,13 @@ def plan_2d_fallback(dijkstra_grid, start_x, start_y, start_th,
             ok, traj = _stitch_waypoints(
                 wps, start_th, collision_fn, max_rs_paths)
             if ok:
-                return True, traj
+                tlen = _trajectory_length(traj)
+                if tlen < best_len:
+                    best_traj = traj
+                    best_len = tlen
+
+    if best_traj is not None:
+        return True, best_traj
 
     return False, None
 
