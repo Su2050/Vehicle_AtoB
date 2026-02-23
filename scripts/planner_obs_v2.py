@@ -121,6 +121,27 @@ def _check_traj_collision(traj, collision_fn):
     return True
 
 
+_WALL_X = 1.92
+_WALL_CORRIDOR_Y = 0.5
+_MAX_BEHIND_WALL_PTS = 5
+
+
+def _path_goes_behind_wall(traj):
+    """Reject paths that route behind the pallet wall (x < 1.92, |y| > 0.5).
+    Brief dips (fewer than _MAX_BEHIND_WALL_PTS points) are tolerated
+    for near-goal RS curve arcs.
+    """
+    if not traj:
+        return False
+    count = 0
+    for pt in traj:
+        if pt[0] < _WALL_X and abs(pt[1]) > _WALL_CORRIDOR_Y:
+            count += 1
+            if count > _MAX_BEHIND_WALL_PTS:
+                return True
+    return False
+
+
 def _try_milestone_rs_bypass(sx, sy, sth, obstacles, collision_fn,
                               fast_obstacles=None, no_corridor=False,
                               max_paths=8, max_milestones=20):
@@ -376,6 +397,12 @@ def plan_path_robust_obs_v2(x0, y0, theta0, precomp_prim,
     fast_obstacles = _preprocess_obstacles(obstacles)
     coll_fn = _make_collision_fn(no_corridor, fast_obstacles)
 
+    goal_valid, _ = coll_fn(RS_GOAL_X, RS_GOAL_Y, RS_GOAL_TH)
+    if not goal_valid:
+        stats.update(expanded=0, elapsed_ms=0.0, two_stage=False,
+                     level='FAILED_goal_blocked')
+        return False, None, None
+
     dijkstra_grid = DijkstraGrid(RS_GOAL_X, RS_GOAL_Y)
     dijkstra_grid.build_map(obstacles, start_x=x0, start_y=y0)
     _, start_d_goal = dijkstra_grid.get_heuristic(x0, y0)
@@ -385,7 +412,7 @@ def plan_path_robust_obs_v2(x0, y0, theta0, precomp_prim,
         rs_stats = {}
         ok, acts, traj = plan_path_pure_rs(x0, y0, theta0,
                                            collision_fn=coll_fn, stats=rs_stats)
-        if ok:
+        if ok and not _path_goes_behind_wall(traj):
             stats.update(rs_stats)
             stats['level'] = 'L1_pure_rs'
             return True, acts, traj
@@ -396,7 +423,7 @@ def plan_path_robust_obs_v2(x0, y0, theta0, precomp_prim,
             x0, y0, theta0, obstacles, coll_fn,
             fast_obstacles=fast_obstacles, no_corridor=no_corridor,
             max_paths=10, max_milestones=20)
-        if bypass_ok:
+        if bypass_ok and not _path_goes_behind_wall(bypass_traj):
             total_ms = round((time.perf_counter() - t_robust) * 1000.0, 1)
             stats.update(
                 expanded=0, elapsed_ms=total_ms,

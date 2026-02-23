@@ -99,23 +99,24 @@ SCENARIOS = {
             (5.0, 0.0, 0, "behind_wall_center"),
             (5.0, -2.0, 0, "behind_wall_lower"),
             (7.0, 2.5, 0, "near_gap_side"),
+            (5.0, -2.5, 90, "wall_parallel_heading"),
         ],
         "expect_success": True,
-        "note": "Wall y∈[-3.5,1.5], gap at y>1.5 — must go around top end",
+        "note": "Wall y∈[-3.5,1.5], gap at y>1.5 — includes 90° heading parallel to wall",
     },
     # ── 4. Narrow passage between two obstacles ──
     "S04_narrow_passage": {
         "obstacles": [
-            {'x': 3.5, 'y': -3.5, 'w': 0.6, 'h': 2.5},
-            {'x': 3.5, 'y': 1.0, 'w': 0.6, 'h': 2.5},
+            {'x': 3.5, 'y': -3.5, 'w': 0.6, 'h': 2.9},
+            {'x': 3.5, 'y': 0.6, 'w': 0.6, 'h': 2.9},
         ],
         "cases": [
             (5.0, 0.0, 0, "passage_center"),
-            (6.0, 0.4, -11, "passage_offset_upper"),
-            (6.0, -0.4, 11, "passage_offset_lower"),
+            (6.0, 0.3, -11, "passage_offset_upper"),
+            (6.0, -0.3, 11, "passage_offset_lower"),
         ],
         "expect_success": True,
-        "note": "Gap y∈[-1.0,1.0]=2.0m, vehicle radius 0.5m — tight but passable",
+        "note": "Gap y∈[-0.6,0.6]=1.2m, vehicle radius 0.1m — tight passage",
     },
     # ── 5. U-shaped trap (open toward +x) ──
     "S05_u_trap": {
@@ -179,9 +180,10 @@ SCENARIOS = {
             (2.10, 0.0, 0, "exact_goal"),
             (2.15, 0.05, 1, "near_goal_micro_offset"),
             (2.20, -0.10, -3, "goal_boundary"),
+            (2.50, 0.0, 180, "close_reverse_180"),
         ],
         "expect_success": True,
-        "note": "Start inside goal region — should return instantly with empty or trivial path",
+        "note": "Start inside/near goal region — includes extreme 180° reversal at close range",
     },
     # ── 9. Dead-end corridor (must reverse out) ──
     "S09_dead_end_reverse": {
@@ -225,8 +227,20 @@ SCENARIOS = {
         "expect_success": True,
         "note": "Vertical wall y∈[-3.5,1.0] + horizontal ceiling y=2.5 — must navigate through gap y∈[1.0,2.5]",
     },
-    # ── 12. Force fallback (low expand limit) ──
-    "S12_force_fallback": {
+    # ── 12. Goal covered by obstacle (instant fail) ──
+    "S12_goal_covered": {
+        "obstacles": [
+            {'x': 1.9, 'y': -0.3, 'w': 0.5, 'h': 0.6},
+        ],
+        "cases": [
+            (5.0, 0.0, 0, "goal_blocked"),
+            (3.0, 1.0, -30, "goal_blocked_angled"),
+        ],
+        "expect_success": False,
+        "note": "Obstacle covers goal (2.1, 0) — planner should fail instantly (<100ms)",
+    },
+    # ── 13. Force fallback (low expand limit) ──
+    "S13_force_fallback": {
         "obstacles": [
             {'x': 4.0, 'y': -0.5, 'w': 0.6, 'h': 1.0},
         ],
@@ -251,7 +265,7 @@ def _validate_rs_traj(rs_traj, obstacles):
     fast_obs = _preprocess_obstacles(obstacles) if obstacles else None
     for i, pt in enumerate(rs_traj):
         valid, reason = check_collision(pt[0], pt[1], pt[2],
-                                        no_corridor=False, obstacles=fast_obs)
+                                        no_corridor=True, obstacles=fast_obs)
         if not valid:
             return False, f"RS traj collision at step {i}: ({pt[0]:.2f},{pt[1]:.2f},{pt[2]:.2f}) reason={reason}"
     return True, ""

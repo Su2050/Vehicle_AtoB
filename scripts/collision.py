@@ -1,5 +1,16 @@
 import math
 
+VEHICLE_RADIUS = 0.1
+_VEHICLE_R_SQ = VEHICLE_RADIUS * VEHICLE_RADIUS
+
+
+def set_vehicle_radius(r):
+    """Runtime-configurable vehicle collision radius (meters)."""
+    global VEHICLE_RADIUS, _VEHICLE_R_SQ
+    VEHICLE_RADIUS = r
+    _VEHICLE_R_SQ = r * r
+
+
 def check_collision(nx, ny, nth, sin_nth=None, no_corridor=False, obstacles=None):
     """
     检查状态是否合法
@@ -9,14 +20,12 @@ def check_collision(nx, ny, nth, sin_nth=None, no_corridor=False, obstacles=None
     no_corridor=True 时跳过安全走廊约束。
     obstacles: 可选障碍物列表，如果是预处理过的则为 [(min_x, max_x, min_y, max_y), ...]，否则为原格式
     """
-    # 全局物理边界安全约束 (任何情况下均不可突破)
     if ny < -3.5 or ny > 3.5:
         return False, 'OBSTACLE'
-    if nx < -0.5 or nx > 9.0:
+    if nx > 9.0 or nx < 1.0:
         return False, 'OBSTACLE'
 
     if obstacles:
-        # 叉车近似为一个半径为 0.5m 的圆
         for obs in obstacles:
             if isinstance(obs, tuple):
                 min_x, max_x, min_y, max_y = obs
@@ -24,11 +33,11 @@ def check_collision(nx, ny, nth, sin_nth=None, no_corridor=False, obstacles=None
                 ox, oy, ow, oh = obs['x'], obs['y'], obs['w'], obs['h']
                 min_x, max_x = min(ox, ox + ow), max(ox, ox + ow)
                 min_y, max_y = min(oy, oy + oh), max(oy, oy + oh)
-            
+
             dx = nx - max_x if nx > max_x else (min_x - nx if nx < min_x else 0.0)
             dy = ny - max_y if ny > max_y else (min_y - ny if ny < min_y else 0.0)
-            
-            if dx * dx + dy * dy < 0.25: # 0.5 * 0.5
+
+            if dx * dx + dy * dy < _VEHICLE_R_SQ:
                 return False, 'OBSTACLE'
 
     # 安全走廊门控 (safe_corridor) —— 可选关闭

@@ -347,8 +347,8 @@ def plan_2d_fallback(dijkstra_grid, start_x, start_y, start_th,
             candidates.append(alt)
 
     for sign in (1.0, -1.0):
-        px = start_x + sign * _HEADING_PULL_DIST * math.cos(start_th)
-        py = start_y + sign * _HEADING_PULL_DIST * math.sin(start_th)
+        px = start_x - sign * _HEADING_PULL_DIST * math.cos(start_th)
+        py = start_y - sign * _HEADING_PULL_DIST * math.sin(start_th)
         if px < 0.0 or px > 9.5 or py < -5.5 or py > 5.5:
             continue
         pull_path = _dijkstra_2d_path(
