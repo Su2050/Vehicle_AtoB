@@ -51,9 +51,9 @@ def _timeout_handler(signum, frame):
 # ============================================================================
 
 def _is_start_valid(x, y, th, obstacles):
-    """预过滤：起点必须不在障碍物内"""
+    """预过滤：起点必须不在障碍物/走廊内（与轨迹验证使用相同的严格模式）"""
     fast_obs = _preprocess_obstacles(obstacles) if obstacles else None
-    valid, _ = check_collision(x, y, th, no_corridor=True, obstacles=fast_obs)
+    valid, _ = check_collision(x, y, th, no_corridor=False, obstacles=fast_obs)
     return valid
 
 def _is_goal_blocked(obstacles):
@@ -80,7 +80,9 @@ def generate_cases(profile="quick", seed=42):
     
     def add_case(type_name, x, y, th, obstacles, expect_fail=False):
         nonlocal case_id
-        if not _is_start_valid(x, y, th, obstacles):
+        # 先取整再做预过滤，确保预过滤和轨迹验证使用完全相同的坐标值
+        rx, ry, rth = round(x, 2), round(y, 2), round(th, 3)
+        if not _is_start_valid(rx, ry, rth, obstacles):
             return # 过滤掉非法的起点
             
         if not expect_fail and _is_goal_blocked(obstacles):
@@ -90,9 +92,9 @@ def generate_cases(profile="quick", seed=42):
         cases.append({
             'id': case_id,
             'type': type_name,
-            'x': round(x, 2),
-            'y': round(y, 2),
-            'th': round(th, 3),
+            'x': rx,
+            'y': ry,
+            'th': rth,
             'obstacles': obstacles,
             'expect_fail': expect_fail
         })
