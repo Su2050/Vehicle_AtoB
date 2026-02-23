@@ -3,6 +3,11 @@ import math
 import sys
 import main
 try:
+    from planner_obs_v2 import plan_path_robust_obs_v2 as _plan_v2
+    _V2_AVAILABLE = True
+except ImportError:
+    _V2_AVAILABLE = False
+try:
     import smooth as smooth_mod
     _SMOOTH_AVAILABLE = True
 except ImportError:
@@ -304,6 +309,15 @@ class App:
                 no_corridor=self.no_corridor,
                 stats=st,
                 obstacles=self.obstacles
+            )
+        elif _V2_AVAILABLE:
+            ok, acts, rs_traj = _plan_v2(
+                self.sx, self.sy, self.sth, self.prims,
+                use_rs=(self.planning_mode == 1),
+                no_corridor=self.no_corridor,
+                stats=st,
+                rs_expansion_radius=self.rs_radius,
+                obstacles=self.obstacles if self.obstacles else None
             )
         else:
             ok, acts, rs_traj = main.plan_path_robust(
