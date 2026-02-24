@@ -1,4 +1,5 @@
 import math
+from primitives import MAX_PLANNABLE_Y
 
 VEHICLE_RADIUS = 0.1
 _VEHICLE_R_SQ = VEHICLE_RADIUS * VEHICLE_RADIUS
@@ -20,7 +21,7 @@ def check_collision(nx, ny, nth, sin_nth=None, no_corridor=False, obstacles=None
     no_corridor=True 时跳过安全走廊约束。
     obstacles: 可选障碍物列表，如果是预处理过的则为 [(min_x, max_x, min_y, max_y), ...]，否则为原格式
     """
-    if ny < -3.5 or ny > 3.5:
+    if abs(ny) > MAX_PLANNABLE_Y:
         return False, 'OBSTACLE'
     if nx > 9.0 or nx < 1.0:
         return False, 'OBSTACLE'
