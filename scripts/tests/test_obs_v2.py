@@ -15,6 +15,9 @@ import time
 import os
 import sys
 import signal
+
+# 将 scripts/ 目录加入搜索路径，以便从 tests/ 子目录运行时也能找到模块
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import random as _random
 from datetime import datetime
 

@@ -21,11 +21,15 @@
 """
 
 import sys
+import os
 import math
 import io
 import time
 import argparse
 import textwrap
+
+# 将 scripts/ 目录加入搜索路径，以便从 tests/ 子目录运行时也能找到模块
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # ── 命令行 ────────────────────────────────────────────────────────────────────
 if __name__ == '__main__':
