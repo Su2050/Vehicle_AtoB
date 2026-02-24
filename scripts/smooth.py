@@ -46,13 +46,22 @@ def smooth_path(traj_points, smoothing=0.02, density_factor=3):
     u_fine = np.linspace(0, 1, n)
     xs_s, ys_s = splev(u_fine, tck)
 
-    # 从平滑后的 (x,y) 序列重新推算朝向角
-    # 使用相邻两点差分近似切线方向
+    # 朝向角采用参数插值（而非运动方向差分），避免 forward=-x 约定导致的 180° 偏移。
+    # 差分方式 atan2(dy,dx) 给出的是"运动方向"而非"车头朝向"，
+    # 在前进方向=-x 的系统中会整体偏 π，且无法正确处理倒退段。
+    original_ths = np.array([p[2] for p in traj_points])
+    # 原始轨迹点对应的归一化参数（等距）
+    u_orig = np.linspace(0, 1, len(traj_points))
+    # unwrap 以消除 ±π 跳变对线性插值的影响
+    original_ths_unwrapped = np.unwrap(original_ths)
+    ths_interp = np.interp(u_fine, u_orig, original_ths_unwrapped)
+    # 重新包装到 (-π, π]
     ths = []
-    for i in range(n - 1):
-        dx = xs_s[i + 1] - xs_s[i]
-        dy = ys_s[i + 1] - ys_s[i]
-        ths.append(math.atan2(dy, dx))
-    ths.append(traj_points[-1][2])  # 终点朝向沿用原始值
+    for th in ths_interp:
+        while th > math.pi:
+            th -= 2 * math.pi
+        while th <= -math.pi:
+            th += 2 * math.pi
+        ths.append(th)
 
     return list(zip(xs_s.tolist(), ys_s.tolist(), ths))
