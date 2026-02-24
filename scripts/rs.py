@@ -780,8 +780,9 @@ def rs_sample_path_multi(x1, y1, th1, x2, y2, th2, turning_radius, step=0.05, ma
     while lphi > _PI: lphi -= _TWO_PI
     while lphi <= -_PI: lphi += _TWO_PI
 
-    x_rs_goal = lx
-    y_rs_goal = ly
+    # 180° 旋转：local forward=-x → RS forward=+x（与 rs_sample_path 一致）
+    x_rs_goal = -lx
+    y_rs_goal = -ly
     th_rs_goal = lphi
     while th_rs_goal > _PI: th_rs_goal -= _TWO_PI
     while th_rs_goal <= -_PI: th_rs_goal += _TWO_PI
@@ -817,10 +818,13 @@ def rs_sample_path_multi(x1, y1, th1, x2, y2, th2, turning_radius, step=0.05, ma
                 while cth_rs <= -_PI: cth_rs += _TWO_PI
                 rs_pts.append((cx_rs, cy_rs, cth_rs))
 
+        # 逆变换：RS 标准系 → local（180° 旋转逆）→ world
         world_pts = []
         for xr, yr, thr in rs_pts:
-            wx = x1 + xr * cos_t - yr * sin_t
-            wy = y1 + xr * sin_t + yr * cos_t
+            lx_p = -xr
+            ly_p = -yr
+            wx = x1 + lx_p * cos_t - ly_p * sin_t
+            wy = y1 + lx_p * sin_t + ly_p * cos_t
             wth = th1 + thr
             while wth > _PI: wth -= _TWO_PI
             while wth <= -_PI: wth += _TWO_PI
