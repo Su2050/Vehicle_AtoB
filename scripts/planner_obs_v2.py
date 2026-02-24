@@ -30,7 +30,7 @@ import astar_core
 def _make_rs_expand_fn_multi(collision_fn, rs_expansion_radius, max_paths=8):
     """
     RS expansion that tries multiple candidate paths (sorted by length).
-    Falls back gracefully: if rs_sample_path_multi is unavailable, uses single path.
+    Rejects paths that go behind the pallet wall or take unreasonable detours.
     """
     def rs_expand_fn(cx, cy, cth, cost, path_node, expanded, t_start, stats):
         euclidean_goal = math.hypot(cx - RS_GOAL_X, cy - RS_GOAL_Y)
@@ -46,6 +46,10 @@ def _make_rs_expand_fn_multi(collision_fn, rs_expansion_radius, max_paths=8):
                 continue
             ex, ey, eth = traj[-1]
             if not (ex <= 2.25 and abs(ey) <= 0.18 and abs(eth) <= ALIGN_GOAL_DYAW):
+                continue
+            if _path_goes_behind_wall(traj):
+                continue
+            if _path_is_unreasonable(traj, cx, cy):
                 continue
             traj_ok = True
             for pt in traj:
@@ -146,6 +150,18 @@ _PATH_LENGTH_RATIO_MAX = 3.0
 _PATH_LATERAL_EXTRA_MAX = 2.0
 
 
+def _count_gear_shifts(acts):
+    if not acts:
+        return 0
+    s = 0
+    last_g = acts[0][0]
+    for a in acts[1:]:
+        if a[0] != last_g:
+            s += 1
+            last_g = a[0]
+    return s
+
+
 def _path_is_unreasonable(traj, sx, sy):
     """Reject paths with excessive length or lateral deviation.
     Catches L1/L1.5 arcs that technically avoid the wall but detour wildly.
@@ -153,8 +169,8 @@ def _path_is_unreasonable(traj, sx, sy):
     if not traj or len(traj) < 3:
         return False
     direct = math.hypot(sx - RS_GOAL_X, sy - RS_GOAL_Y)
-    if direct < 0.5:
-        return False
+    # 改进：如果起终点极近（如 0.1m），直接距离很小会导致分母爆炸，引入 2.0 的下限保护
+    eff_direct = max(direct, 2.0)
     traj_len = 0.0
     max_abs_y = abs(sy)
     for i in range(1, len(traj)):
@@ -163,7 +179,7 @@ def _path_is_unreasonable(traj, sx, sy):
         ay = abs(traj[i][1])
         if ay > max_abs_y:
             max_abs_y = ay
-    if traj_len > direct * _PATH_LENGTH_RATIO_MAX:
+    if traj_len > eff_direct * _PATH_LENGTH_RATIO_MAX:
         return True
     y_bound = max(abs(sy), abs(RS_GOAL_Y)) + _PATH_LATERAL_EXTRA_MAX
     if max_abs_y > y_bound:
@@ -503,10 +519,13 @@ def plan_path_robust_obs_v2(x0, y0, theta0, precomp_prim,
     t1_ms = round((time.perf_counter() - t1) * 1000.0, 1)
     stats['stage1_ms'] = t1_ms
 
+    prefix_acts = phase0_acts + acts1 + stage15_acts
+    prefix_too_many_shifts = _count_gear_shifts(prefix_acts) > 8
+
     # ── Level-1.8: 2D skeleton + RS stitching (fast, before A*) ──
-    if obstacles:
+    if obstacles and not prefix_too_many_shifts:
         coll_relaxed = coll_fn
-        starts_2d = [(mx, my, mth, phase0_acts + acts1 + stage15_acts)]
+        starts_2d = [(mx, my, mth, prefix_acts)]
         if (mx, my) != (x0, y0):
             starts_2d.append((x0, y0, theta0, []))
         for sx2, sy2, sth2, prefix_acts in starts_2d:
@@ -514,7 +533,7 @@ def plan_path_robust_obs_v2(x0, y0, theta0, precomp_prim,
                 fb2d_ok, fb2d_traj = plan_2d_fallback(
                     dijkstra_grid, sx2, sy2, sth2, coll_relaxed,
                     spacing=spc, max_rs_paths=12, obstacles=obstacles)
-                if fb2d_ok:
+                if fb2d_ok and not _path_goes_behind_wall(fb2d_traj) and not _path_is_unreasonable(fb2d_traj, sx2, sy2):
                     total_ms = round((time.perf_counter() - t_robust) * 1000.0, 1)
                     stats.update(
                         expanded=0, elapsed_ms=total_ms,
@@ -527,65 +546,66 @@ def plan_path_robust_obs_v2(x0, y0, theta0, precomp_prim,
     # ── Level-2: Multi-stage A* from K-turn position ──
     _, mid_d_goal = dijkstra_grid.get_heuristic(mx, my)
 
-    for stage_idx, stage in enumerate(RECOVERY_STAGES):
-        st = {}
-        rs_expand = _make_rs_expand_fn_multi(
-            coll_fn, max(rs_expansion_radius, stage['rs_radius']),
-            max_paths=stage['max_rs_paths']) if use_rs else None
+    if not prefix_too_many_shifts:
+        for stage_idx, stage in enumerate(RECOVERY_STAGES):
+            st = {}
+            rs_expand = _make_rs_expand_fn_multi(
+                coll_fn, max(rs_expansion_radius, stage['rs_radius']),
+                max_paths=stage['max_rs_paths']) if use_rs else None
 
-        heuristic = _make_heuristic_fn_v2(
-            dijkstra_grid, mid_d_goal,
-            allow_uphill=stage['allow_uphill'], h_weight=stage['h_weight'])
+            heuristic = _make_heuristic_fn_v2(
+                dijkstra_grid, mid_d_goal,
+                allow_uphill=stage['allow_uphill'], h_weight=stage['h_weight'])
 
-        dist_x = max(0.0, mx - 2.1)
-        dyn_prim = max(stage['prim_limit'], 30 + int(dist_x / 0.1))
+            dist_x = max(0.0, mx - 2.1)
+            dyn_prim = max(stage['prim_limit'], 30 + int(dist_x / 0.1))
 
-        ok2, acts2, rs_traj = astar_core.plan_path(
-            mx, my, mth, precomp_prim,
-            collision_fn=coll_fn, heuristic_fn=heuristic,
-            rs_expand_fn=rs_expand, stats=st,
-            _goal_xmin=0.5, _goal_xmax=8.0,
-            _prim_limit=dyn_prim,
-            _expand_limit=stage['expand_limit'],
-            _rs_expand=use_rs,
-            rs_expansion_radius=max(rs_expansion_radius, stage['rs_radius']))
+            ok2, acts2, rs_traj = astar_core.plan_path(
+                mx, my, mth, precomp_prim,
+                collision_fn=coll_fn, heuristic_fn=heuristic,
+                rs_expand_fn=rs_expand, stats=st,
+                _goal_xmin=0.5, _goal_xmax=8.0,
+                _prim_limit=dyn_prim,
+                _expand_limit=stage['expand_limit'],
+                _rs_expand=use_rs,
+                rs_expansion_radius=max(rs_expansion_radius, stage['rs_radius']))
 
-        if ok2:
-            if rs_traj is None and not st.get('rs_expansion', False):
-                gp = st.get('goal_pos')
-                if gp and obstacles:
-                    gx, gy, gth = gp
-                    in_narrow_goal = (gx <= 2.25 and abs(gy) <= 0.18
-                                      and abs(gth) <= ALIGN_GOAL_DYAW)
-                    if not in_narrow_goal:
-                        verify = rs.rs_sample_path_multi(
-                            gx, gy, gth, RS_GOAL_X, RS_GOAL_Y, RS_GOAL_TH,
-                            MIN_TURN_RADIUS, step=DT * 0.5, max_paths=10)
-                        verified = False
-                        for vt in verify:
-                            if vt and _check_traj_collision(vt, coll_fn):
-                                ex, ey, eth = vt[-1]
-                                if (ex <= 2.25 and abs(ey) <= 0.18
-                                        and abs(eth) <= ALIGN_GOAL_DYAW):
-                                    rs_traj = vt
-                                    verified = True
-                                    break
-                        if not verified:
-                            continue
+            if ok2:
+                if rs_traj is None and not st.get('rs_expansion', False):
+                    gp = st.get('goal_pos')
+                    if gp and obstacles:
+                        gx, gy, gth = gp
+                        in_narrow_goal = (gx <= 2.25 and abs(gy) <= 0.18
+                                          and abs(gth) <= ALIGN_GOAL_DYAW)
+                        if not in_narrow_goal:
+                            verify = rs.rs_sample_path_multi(
+                                gx, gy, gth, RS_GOAL_X, RS_GOAL_Y, RS_GOAL_TH,
+                                MIN_TURN_RADIUS, step=DT * 0.5, max_paths=10)
+                            verified = False
+                            for vt in verify:
+                                if vt and _check_traj_collision(vt, coll_fn):
+                                    ex, ey, eth = vt[-1]
+                                    if (ex <= 2.25 and abs(ey) <= 0.18
+                                            and abs(eth) <= ALIGN_GOAL_DYAW):
+                                        rs_traj = vt
+                                        verified = True
+                                        break
+                            if not verified:
+                                continue
 
-            final_acts = phase0_acts + acts1 + stage15_acts + (acts2 or [])
-            total_ms = round((time.perf_counter() - t_robust) * 1000.0, 1)
-            stats.update(
-                expanded=st.get('expanded', 0), elapsed_ms=total_ms,
-                use_rs=use_rs, no_corridor=no_corridor,
-                rs_expansion=st.get('rs_expansion', False),
-                two_stage=True, stage1_ms=t1_ms,
-                stage1_end=(mx, my, mth),
-                goal_pos=st.get('goal_pos'),
-                level=f'L2_{stage["name"]}',
-                recovery_stage=stage_idx,
-            )
-            return True, final_acts, rs_traj
+                final_acts = phase0_acts + acts1 + stage15_acts + (acts2 or [])
+                total_ms = round((time.perf_counter() - t_robust) * 1000.0, 1)
+                stats.update(
+                    expanded=st.get('expanded', 0), elapsed_ms=total_ms,
+                    use_rs=use_rs, no_corridor=no_corridor,
+                    rs_expansion=st.get('rs_expansion', False),
+                    two_stage=True, stage1_ms=t1_ms,
+                    stage1_end=(mx, my, mth),
+                    goal_pos=st.get('goal_pos'),
+                    level=f'L2_{stage["name"]}',
+                    recovery_stage=stage_idx,
+                )
+                return True, final_acts, rs_traj
 
     # ── Level-3: Fallback from original start (robust + aggressive only) ──
     for stage_idx, stage in enumerate(RECOVERY_STAGES[1:], 1):
