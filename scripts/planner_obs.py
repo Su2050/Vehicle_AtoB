@@ -13,6 +13,38 @@ from rs_utils import plan_path_pure_rs
 from heuristic import (DijkstraGrid, geometric_heuristic, rs_heuristic,
                        rs_grid_heuristic, preapproach_heuristic)
 import astar_core
+from fallback_2d import plan_2d_fallback
+
+
+# ── Wall-rejection constants ──
+_WALL_X = 1.92
+_WALL_CORRIDOR_Y = 0.5
+_MAX_BEHIND_WALL_PTS = 5
+
+
+def _path_goes_behind_wall(traj):
+    """Reject paths that route behind the pallet wall (x < 1.92, |y| > 0.5)."""
+    if not traj:
+        return False
+    count = 0
+    for pt in traj:
+        if pt[0] < _WALL_X and abs(pt[1]) > _WALL_CORRIDOR_Y:
+            count += 1
+            if count > _MAX_BEHIND_WALL_PTS:
+                return True
+    return False
+
+
+def _count_gear_shifts(acts):
+    if not acts:
+        return 0
+    s = 0
+    last_g = acts[0][0]
+    for a in acts[1:]:
+        if a[0] != last_g:
+            s += 1
+            last_g = a[0]
+    return s
 
 
 def _preprocess_obstacles(obstacles):
@@ -282,6 +314,7 @@ def plan_path_robust_obs(x0, y0, theta0, precomp_prim,
     返回: (success, actions, rs_traj)
     """
     t_robust = time.perf_counter()
+    planner_deadline = t_robust + 28.0  # leave 2s margin for the 30s test timeout
 
     if abs(y0) > MAX_PLANNABLE_Y:
         if stats is not None:
@@ -395,6 +428,9 @@ def plan_path_robust_obs(x0, y0, theta0, precomp_prim,
             stage1_mode = 'greedy_kturn + astar'
             acts1.extend(acts1_greedy); mx, my, mth = mx2, my2, mth2
 
+        # Stage-1 gets a tight budget so L1.8 (2D skeleton) has time to run
+        stage1_deadline = min(time.perf_counter() + 8.0, planner_deadline)
+
         # Sequential obstacle clearance
         if fast_obstacles and (mx > 2.5 or abs(my) > PREAPPROACH_Y_MAX):
             blocking_obs = []
@@ -433,7 +469,7 @@ def plan_path_robust_obs(x0, y0, theta0, precomp_prim,
                     _goal_xmin=PREAPPROACH_X_MIN, _goal_xmax=sub_xmax,
                     _goal_ymin=sub_ymin, _goal_ymax=sub_ymax, _goal_thmax=sub_thmax,
                     _step_limit=step_sub, _expand_limit=expand_sub, _prim_limit=prim_sub,
-                    _rs_expand=False)
+                    _rs_expand=False, deadline=stage1_deadline)
                 if ok_sub:
                     acts1.extend(acts_sub or [])
                     gp = st_sub.get('goal_pos')
@@ -476,7 +512,8 @@ def plan_path_robust_obs(x0, y0, theta0, precomp_prim,
                 _goal_ymin=safe_y_min, _goal_ymax=safe_y_max,
                 _goal_thmax=PREAPPROACH_TH_MAX,
                 _step_limit=step_limit_st1, _expand_limit=expand_limit_st1,
-                _prim_limit=prim_limit_st1, _rs_expand=False)
+                _prim_limit=prim_limit_st1, _rs_expand=False,
+                deadline=stage1_deadline)
             if ok1:
                 acts1.extend(acts1_astar or [])
                 goal_pos = st1.get('goal_pos')
@@ -511,13 +548,47 @@ def plan_path_robust_obs(x0, y0, theta0, precomp_prim,
     t15_ms = round((time.perf_counter() - t15_start) * 1000.0, 1)
     if stats is not None: stats['stage15_ms'] = t15_ms
 
+    # ── Level-1.8: 2D skeleton + RS stitching (same as v2) ──
+    prefix_acts = phase0_acts + acts1 + stage15_acts
+    prefix_too_many_shifts = _count_gear_shifts(prefix_acts) > 8
+
+    if bool(obstacles) and dijkstra_grid is not None:
+        l18_deadline = min(time.perf_counter() + 15.0, planner_deadline)
+        if prefix_too_many_shifts:
+            starts_2d = [(x0, y0, theta0, [])]
+        else:
+            starts_2d = [(mx, my, mth, prefix_acts)]
+            if (mx, my) != (x0, y0):
+                starts_2d.append((x0, y0, theta0, []))
+        for sx2, sy2, sth2, pre_acts in starts_2d:
+            if time.perf_counter() > l18_deadline:
+                break
+            for spc in [2.5, 1.5, 1.0]:
+                if time.perf_counter() > l18_deadline:
+                    break
+                fb2d_ok, fb2d_traj = plan_2d_fallback(
+                    dijkstra_grid, sx2, sy2, sth2, coll_fn,
+                    spacing=spc, max_rs_paths=12, obstacles=obstacles,
+                    deadline=l18_deadline)
+                if fb2d_ok and not _path_goes_behind_wall(fb2d_traj):
+                    total_ms = round((time.perf_counter() - t_robust) * 1000.0, 1)
+                    if stats is not None:
+                        stats.update(
+                            expanded=0, elapsed_ms=total_ms,
+                            level=f'L1_8_2d_skeleton_sp{spc}',
+                            use_rs=use_rs, no_corridor=no_corridor,
+                            two_stage=True, stage1_ms=t1_ms,
+                        )
+                    return True, pre_acts, fb2d_traj
+
     if not ok1:
         st_fb = {}
         ok_fb, acts_fb, traj_fb = astar_core.plan_path(
             x0, y0, theta0, precomp_prim,
             collision_fn=coll_fn, heuristic_fn=heuristic_fn,
             rs_expand_fn=rs_expand_fn, stats=st_fb,
-            _rs_expand=use_rs, rs_expansion_radius=rs_expansion_radius)
+            _rs_expand=use_rs, rs_expansion_radius=rs_expansion_radius,
+            deadline=planner_deadline)
         if stats is not None:
             stats.update(st_fb); stats['two_stage'] = True; stats['stage1_ms'] = t1_ms
             stats['fail_reason'] = 'Stage1-Fail-Fallback'
@@ -529,13 +600,15 @@ def plan_path_robust_obs(x0, y0, theta0, precomp_prim,
     st2 = {}
     dist_x = max(0.0, mx - 2.1)
     dynamic_prim_limit = max(150, 30 + int(dist_x / 0.1))
+    stage2_deadline = min(time.perf_counter() + 10.0, planner_deadline)
     ok2, acts2, rs_traj = astar_core.plan_path(
         mx, my, mth, precomp_prim,
         collision_fn=coll_fn, heuristic_fn=heuristic_fn,
         rs_expand_fn=rs_expand_fn, stats=st2,
         _goal_xmin=0.5, _goal_xmax=8.0,
         _prim_limit=dynamic_prim_limit,
-        _rs_expand=use_rs, rs_expansion_radius=max(rs_expansion_radius, 4.0))
+        _rs_expand=use_rs, rs_expansion_radius=max(rs_expansion_radius, 4.0),
+        deadline=stage2_deadline)
 
     total_ms = round((time.perf_counter() - t_robust) * 1000.0, 1)
 
@@ -562,7 +635,8 @@ def plan_path_robust_obs(x0, y0, theta0, precomp_prim,
         collision_fn=coll_fn, heuristic_fn=heuristic_fn,
         rs_expand_fn=rs_expand_fn, stats=st_fb2,
         _expand_limit=150000, _prim_limit=max(150, dynamic_prim_limit),
-        _rs_expand=use_rs, rs_expansion_radius=rs_expansion_radius)
+        _rs_expand=use_rs, rs_expansion_radius=rs_expansion_radius,
+        deadline=planner_deadline)
     if stats is not None:
         stats.update(st_fb2); stats['two_stage'] = True; stats['stage1_ms'] = t1_ms
         stats['stage2_ms'] = st2.get('elapsed_ms', 0); stats['fail_reason'] = 'Stage2-Fail-Fallback'
