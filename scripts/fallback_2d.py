@@ -269,11 +269,15 @@ def _try_connect_with_heading_variants(x1, y1, th1, x2, y2, th2_nom,
 def _stitch_waypoints(waypoints, start_th, collision_fn, max_rs_paths, deadline=None):
     """
     Stitch waypoints with RS segments. Last segment targets exact goal pose.
+    If the last segment fails, backtrack to earlier waypoints and scan for
+    heading combinations that enable goal connection.
     Returns (success, trajectory).
     """
     nominal_headings = _assign_headings(waypoints)
     full_traj = []
     cur_th = start_th
+    # Track (traj_prefix_length, heading) at each waypoint for backtracking
+    wp_states = [(0, cur_th)]
 
     for i in range(len(waypoints) - 1):
         if deadline is not None and time.perf_counter() > deadline:
@@ -297,6 +301,23 @@ def _stitch_waypoints(waypoints, start_th, collision_fn, max_rs_paths, deadline=
                                           collision_fn, max_paths=max_rs_paths)
                     if seg is not None:
                         break
+
+            # Backtrack fallback: redo last k segments with goal-viable headings
+            if seg is None:
+                bt = _try_backtrack_to_goal(
+                    waypoints, wp_states, i, collision_fn,
+                    max_rs_paths, deadline)
+                if bt is not None:
+                    trunc_len, bt_segs = bt
+                    full_traj = full_traj[:trunc_len]
+                    for s in bt_segs:
+                        full_traj.extend(s)
+                    if full_traj:
+                        ex, ey, eth = full_traj[-1]
+                        if ex <= 2.25 and abs(ey) <= 0.18 and abs(eth) <= ALIGN_GOAL_DYAW:
+                            return True, full_traj
+                    return False, None
+
             actual_th = target_th
         else:
             seg, actual_th = _try_connect_with_heading_variants(
@@ -308,6 +329,7 @@ def _stitch_waypoints(waypoints, start_th, collision_fn, max_rs_paths, deadline=
 
         full_traj.extend(seg)
         cur_th = actual_th
+        wp_states.append((len(full_traj), cur_th))
 
     if full_traj:
         ex, ey, eth = full_traj[-1]
@@ -315,6 +337,66 @@ def _stitch_waypoints(waypoints, start_th, collision_fn, max_rs_paths, deadline=
             return True, full_traj
 
     return False, None
+
+
+def _try_backtrack_to_goal(waypoints, wp_states, last_seg_idx,
+                           collision_fn, max_rs_paths, deadline):
+    """
+    When the last RS segment to goal fails, backtrack through earlier waypoints
+    and scan for heading combinations that enable goal connection.
+
+    For each backtrack level k:
+      1. Try direct RS from the pivot waypoint to goal.
+      2. Try pivot → intermediate (with scanned heading) → goal.
+
+    Returns (traj_truncate_point, [segment_list]) or None.
+    """
+    max_back = min(last_seg_idx, 3)
+
+    for k in range(1, max_back + 1):
+        if deadline is not None and time.perf_counter() > deadline:
+            return None
+
+        pivot_idx = last_seg_idx - k
+        pivot_traj_len, pivot_th = wp_states[pivot_idx]
+        px, py = waypoints[pivot_idx]
+
+        # Strategy 1: Direct RS from pivot to goal (with small offsets)
+        for off in [0.0, 0.04, -0.04, 0.08, -0.08]:
+            seg = _try_rs_connect(px, py, pivot_th,
+                                  RS_GOAL_X, RS_GOAL_Y, RS_GOAL_TH + off,
+                                  collision_fn, max_paths=max_rs_paths)
+            if seg is not None:
+                return (pivot_traj_len, [seg])
+
+        # Strategy 2: pivot → intermediate waypoint → goal
+        for mid_idx in range(pivot_idx + 1, last_seg_idx + 1):
+            if deadline is not None and time.perf_counter() > deadline:
+                return None
+
+            mx, my = waypoints[mid_idx]
+
+            # Scan headings at the intermediate that enable goal connection
+            for deg in range(-180, 180, 15):
+                if deadline is not None and time.perf_counter() > deadline:
+                    return None
+                test_th = math.radians(deg)
+
+                # Can we reach goal from (mx, my, test_th)?
+                goal_seg = _try_rs_connect(mx, my, test_th,
+                                           RS_GOAL_X, RS_GOAL_Y, RS_GOAL_TH,
+                                           collision_fn, max_paths=max_rs_paths)
+                if goal_seg is None:
+                    continue
+
+                # Can we reach (mx, my, test_th) from pivot?
+                mid_seg = _try_rs_connect(px, py, pivot_th,
+                                          mx, my, test_th,
+                                          collision_fn, max_paths=max_rs_paths)
+                if mid_seg is not None:
+                    return (pivot_traj_len, [mid_seg, goal_seg])
+
+    return None
 
 
 def _trajectory_length(traj):

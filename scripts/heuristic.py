@@ -38,8 +38,8 @@ class DijkstraGrid:
         self.dist_map = [[float('inf')] * self.ny for _ in range(self.nx)]
         self.cost_map = [[1.0] * self.ny for _ in range(self.nx)]
         
-        inf_cells = int(math.ceil(0.7 / self.res))
-        soft_inf_cells = int(math.ceil(1.2 / self.res))
+        inf_cells = int(math.ceil(self.inflate_radius / self.res))
+        soft_inf_cells = int(math.ceil(max(self.inflate_radius * 2.0, 0.5) / self.res))
         
         if obstacles:
             for obs in obstacles:
@@ -137,6 +137,30 @@ class DijkstraGrid:
                             self.dist_map[nx][ny] = new_d
                             heapq.heappush(q, (new_d, nx, ny))
                             
+        # Fill inflated-obstacle cells with interpolated distance estimates.
+        # This is critical: A* collision uses VEHICLE_RADIUS=0.1m but the
+        # Dijkstra grid uses larger inflation (0.25m+). Positions inside the
+        # inflated zone but outside the real obstacle are reachable by A*, so
+        # they need reasonable heuristic values instead of inf/1000.
+        search_r = max(inf_cells + 2, 3)
+        for gx in range(self.nx):
+            for gy in range(self.ny):
+                if self.obs_map[gx][gy] and self.dist_map[gx][gy] == float('inf'):
+                    best_d = float('inf')
+                    for ddx in range(-search_r, search_r + 1):
+                        for ddy in range(-search_r, search_r + 1):
+                            nx2, ny2 = gx + ddx, gy + ddy
+                            if 0 <= nx2 < self.nx and 0 <= ny2 < self.ny:
+                                if not self.obs_map[nx2][ny2]:
+                                    cd = self.dist_map[nx2][ny2]
+                                    if cd < float('inf'):
+                                        step_d = math.hypot(ddx, ddy) * self.res
+                                        total = cd + step_d + 0.3
+                                        if total < best_d:
+                                            best_d = total
+                    if best_d < float('inf'):
+                        self.dist_map[gx][gy] = best_d
+
         # Precompute gradient angle map
         self.angle_map = [[None for _ in range(self.ny)] for _ in range(self.nx)]
         for gx in range(self.nx):
@@ -181,26 +205,24 @@ class DijkstraGrid:
     def get_heuristic(self, wx, wy, wth=None):
         gx, gy = self._world_to_grid(wx, wy)
         if 0 <= gx < self.nx and 0 <= gy < self.ny:
-            if self.obs_map[gx][gy]:
-                return 1000.0, 1000.0
             dist = self.dist_map[gx][gy]
             pure_dist = dist
             if dist == float('inf'):
                 euc = math.hypot(wx - self.goal_x, wy - self.goal_y)
                 big = max(euc * 3.0, 50.0)
                 return big, big
-            if dist != float('inf'):
-                if wth is not None and dist < 5.0:
-                    goal_th = 0.0 
-                    diff_goal = abs(wth - goal_th)
-                    while diff_goal > math.pi: diff_goal -= 2 * math.pi
-                    diff_goal = abs(diff_goal)
-                    align_goal_diff = min(diff_goal, math.pi - diff_goal)
-                    
-                    weight = (5.0 - dist) * 2.0
-                    dist += align_goal_diff * weight
+            # Apply heading alignment penalty near goal
+            if wth is not None and dist < 5.0:
+                goal_th = 0.0 
+                diff_goal = abs(wth - goal_th)
+                while diff_goal > math.pi: diff_goal -= 2 * math.pi
+                diff_goal = abs(diff_goal)
+                align_goal_diff = min(diff_goal, math.pi - diff_goal)
+                
+                weight = (5.0 - dist) * 2.0
+                dist += align_goal_diff * weight
 
-                return dist, pure_dist
+            return dist, pure_dist
         
         euc = math.hypot(wx - self.goal_x, wy - self.goal_y)
         big = max(euc * 5.0, 100.0)

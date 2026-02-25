@@ -301,7 +301,7 @@ def plan_path_robust_obs(x0, y0, theta0, precomp_prim,
         return False, None, None
 
     if dijkstra_grid is None and use_rs and obstacles:
-        dijkstra_grid = DijkstraGrid(RS_GOAL_X, RS_GOAL_Y)
+        dijkstra_grid = DijkstraGrid(RS_GOAL_X, RS_GOAL_Y, inflate_radius=0.25)
         dijkstra_grid.build_map(obstacles, start_x=x0, start_y=y0)
 
     # ── Level-1: Pure RS ──

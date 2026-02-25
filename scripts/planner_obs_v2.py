@@ -27,15 +27,23 @@ import astar_core
 # Improvement 1: RS multi-candidate expansion
 # ═══════════════════════════════════════════════════════════════════════
 
-def _make_rs_expand_fn_multi(collision_fn, rs_expansion_radius, max_paths=8):
+def _make_rs_expand_fn_multi(collision_fn, rs_expansion_radius, max_paths=8,
+                             dijkstra_grid=None):
     """
     RS expansion that tries multiple candidate paths (sorted by length).
     Rejects paths that go behind the pallet wall or take unreasonable detours.
+    Uses Dijkstra line-of-sight to skip expensive RS computation when blocked.
     """
     def rs_expand_fn(cx, cy, cth, cost, path_node, expanded, t_start, stats):
         euclidean_goal = math.hypot(cx - RS_GOAL_X, cy - RS_GOAL_Y)
         if euclidean_goal >= rs_expansion_radius + 1.0:
             return None
+
+        # Fast pre-check: if obstacle blocks line-of-sight to goal, skip RS
+        # (RS paths will almost certainly collide with the obstacle)
+        if dijkstra_grid is not None and euclidean_goal > 1.5:
+            if not dijkstra_grid.line_of_sight(cx, cy, RS_GOAL_X, RS_GOAL_Y):
+                return None
 
         trajs = rs.rs_sample_path_multi(
             cx, cy, cth, RS_GOAL_X, RS_GOAL_Y, RS_GOAL_TH,
@@ -466,7 +474,10 @@ def plan_path_robust_obs_v2(x0, y0, theta0, precomp_prim,
                      level='FAILED_goal_blocked')
         return False, None, None
 
-    dijkstra_grid = DijkstraGrid(RS_GOAL_X, RS_GOAL_Y)
+    # Use inflate_radius=0.25 (close to VEHICLE_RADIUS=0.1) so Dijkstra
+    # heuristic matches actual collision feasibility. The old 0.7m inflation
+    # blocked valid detour paths, causing A* to waste its expansion budget.
+    dijkstra_grid = DijkstraGrid(RS_GOAL_X, RS_GOAL_Y, inflate_radius=0.25)
     dijkstra_grid.build_map(obstacles, start_x=x0, start_y=y0)
     _, start_d_goal = dijkstra_grid.get_heuristic(x0, y0)
 
@@ -556,26 +567,36 @@ def plan_path_robust_obs_v2(x0, y0, theta0, precomp_prim,
     prefix_acts = phase0_acts + acts1 + stage15_acts
     prefix_too_many_shifts = _count_gear_shifts(prefix_acts) > 8
 
-    # ── Level-1.8: 2D skeleton + RS stitching (skip for simple obstacles) ──
-    # Only run 2D skeleton if we have complex obstacles (>1) or very tight space
-    run_2d_skeleton = obstacles and not prefix_too_many_shifts and len(obstacles) > 1
+    # ── Level-1.8: 2D skeleton + RS stitching ──
+    # Enable for ALL obstacle cases: 2D Dijkstra trace + RS stitching is the most
+    # effective approach for navigating around obstacles (even single ones).
+    # A* with fine-grained primitives (~0.007m lateral/step) cannot efficiently
+    # detour around obstacles > 0.5m.
+    run_2d_skeleton = bool(obstacles)
     if run_2d_skeleton:
-        l18_deadline = min(time.perf_counter() + 3.0, planner_deadline)
+        l18_deadline = min(time.perf_counter() + 15.0, planner_deadline)
         coll_relaxed = coll_fn
-        starts_2d = [(mx, my, mth, prefix_acts)]
-        if (mx, my) != (x0, y0):
-            starts_2d.append((x0, y0, theta0, []))
+        if prefix_too_many_shifts:
+            # K-turn prefix is too long; skip it, only try from original position
+            starts_2d = [(x0, y0, theta0, [])]
+        else:
+            starts_2d = [(mx, my, mth, prefix_acts)]
+            if (mx, my) != (x0, y0):
+                starts_2d.append((x0, y0, theta0, []))
         for sx2, sy2, sth2, prefix_acts in starts_2d:
             if time.perf_counter() > l18_deadline:
                 break
-            for spc in [2.5, 1.5]:
+            for spc in [2.5, 1.5, 1.0]:
                 if time.perf_counter() > l18_deadline:
                     break
                 fb2d_ok, fb2d_traj = plan_2d_fallback(
                     dijkstra_grid, sx2, sy2, sth2, coll_relaxed,
                     spacing=spc, max_rs_paths=12, obstacles=obstacles,
                     deadline=l18_deadline)
-                if fb2d_ok and not _path_goes_behind_wall(fb2d_traj) and not _path_is_unreasonable(fb2d_traj, sx2, sy2):
+                # L1.8 paths intentionally detour around obstacles, so skip
+                # _path_is_unreasonable (designed for L1/L1.5 wild arcs).
+                # Only check _path_goes_behind_wall for safety.
+                if fb2d_ok and not _path_goes_behind_wall(fb2d_traj):
                     total_ms = round((time.perf_counter() - t_robust) * 1000.0, 1)
                     stats.update(
                         expanded=0, elapsed_ms=total_ms,
@@ -604,7 +625,8 @@ def plan_path_robust_obs_v2(x0, y0, theta0, precomp_prim,
             st = {}
             rs_expand = _make_rs_expand_fn_multi(
                 coll_fn, max(rs_expansion_radius, stage['rs_radius']),
-                max_paths=stage['max_rs_paths']) if use_rs else None
+                max_paths=stage['max_rs_paths'],
+                dijkstra_grid=dijkstra_grid) if use_rs else None
 
             heuristic = _make_heuristic_fn_v2(
                 dijkstra_grid, mid_d_goal,
@@ -676,7 +698,8 @@ def plan_path_robust_obs_v2(x0, y0, theta0, precomp_prim,
         st_fb = {}
         rs_expand = _make_rs_expand_fn_multi(
             coll_fn, max(rs_expansion_radius, stage['rs_radius']),
-            max_paths=stage['max_rs_paths']) if use_rs else None
+            max_paths=stage['max_rs_paths'],
+            dijkstra_grid=dijkstra_grid) if use_rs else None
 
         heuristic = _make_heuristic_fn_v2(
             dijkstra_grid, start_d_goal,
