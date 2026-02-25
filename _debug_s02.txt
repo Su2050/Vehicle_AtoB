@@ -1,0 +1,3 @@
+Testing blocked_direct case...
+Result: ok=False, elapsed=12.21s
+Stats: {'two_stage': True, 'stage1_ms': 0.0, 'expanded': 2003, 'elapsed_ms': 12211.7, 'use_rs': True, 'no_corridor': False, 'level': 'FAILED_all_stages'}

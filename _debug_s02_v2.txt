@@ -1,0 +1,3 @@
+Testing blocked_direct case with 25s budget (faster deadline checks)...
+Result: ok=False, elapsed=24.16s
+Stats: expanded=3003, level=FAILED_all_stages

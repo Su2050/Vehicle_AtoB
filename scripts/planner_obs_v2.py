@@ -79,8 +79,9 @@ def _make_rs_expand_fn_multi(collision_fn, rs_expansion_radius, max_paths=8):
 
 def _generate_bypass_milestones(sx, sy, sth, obstacles, clearance=1.0):
     """
-    Generate a dense grid of candidate waypoint poses around each obstacle.
+    Generate a sparse grid of candidate waypoint poses around each obstacle.
     Focuses on lateral offsets large enough for RS turning radius (~2.1m).
+    Reduced for speed - fewer waypoints to check.
     """
     milestones = []
     if not obstacles:
@@ -97,15 +98,14 @@ def _generate_bypass_milestones(sx, sy, sth, obstacles, clearance=1.0):
             continue
 
         mid_x = (min_x + max_x) * 0.5
-        x_vals = [
-            max_x - 0.5, max_x, max_x + 0.5, max_x + 1.0,
-            mid_x, min_x + 0.5, min_x,
-        ]
+        # Reduced x_vals for speed
+        x_vals = [max_x + 0.5, max_x + 1.0, mid_x]
         x_vals = [x for x in x_vals if 0.5 < x < 8.5]
 
         for y_sign in [1.0, -1.0]:
             edge_y = max_y if y_sign > 0 else min_y
-            y_offsets = [1.0, 1.4, 1.8, 2.2]
+            # Reduced y_offsets for speed
+            y_offsets = [1.2, 2.0]
             for y_off in y_offsets:
                 wp_y = edge_y + y_sign * y_off
                 if abs(wp_y) > 3.0:
@@ -189,7 +189,7 @@ def _path_is_unreasonable(traj, sx, sy):
 
 def _try_milestone_rs_bypass(sx, sy, sth, obstacles, collision_fn,
                               fast_obstacles=None, no_corridor=False,
-                              max_paths=8, max_milestones=20):
+                              max_paths=8, max_milestones=20, deadline=None):
     """
     Try multi-segment RS paths through milestone waypoints to bypass obstacles.
     Uses relaxed collision (no corridor) for mid-segments, strict for final segment.
@@ -207,11 +207,15 @@ def _try_milestone_rs_bypass(sx, sy, sth, obstacles, collision_fn,
 
     # --- Try 2-segment: start → wp → goal ---
     for mx, my, mth, _tag in milestones[:max_milestones]:
+        if deadline is not None and time.perf_counter() > deadline:
+            return False, None  # Hard exit on deadline
         seg1_list = rs.rs_sample_path_multi(
             sx, sy, sth, mx, my, mth,
             MIN_TURN_RADIUS, step=step, max_paths=max_paths)
 
         for seg1 in seg1_list:
+            if deadline is not None and time.perf_counter() > deadline:
+                return False, None
             if not seg1 or not _check_traj_collision(seg1, coll_relaxed):
                 continue
 
@@ -220,6 +224,8 @@ def _try_milestone_rs_bypass(sx, sy, sth, obstacles, collision_fn,
                 MIN_TURN_RADIUS, step=step, max_paths=max_paths)
 
             for seg2 in seg2_list:
+                if deadline is not None and time.perf_counter() > deadline:
+                    return False, None
                 if not seg2 or not _check_traj_collision(seg2, collision_fn):
                     continue
                 ex, ey, eth = seg2[-1]
@@ -235,29 +241,37 @@ def _try_milestone_rs_bypass(sx, sy, sth, obstacles, collision_fn,
         return True, best_traj
 
     # --- Try 3-segment: start → wp_bypass → wp_return → goal ---
+    # Reduced return waypoints for speed
     return_wps = [
-        (2.8, 0.0, 0.0), (3.0, 0.0, 0.0), (3.2, 0.0, 0.0),
-        (2.5, 0.0, 0.0), (2.8, 0.15, 0.0), (2.8, -0.15, 0.0),
+        (2.8, 0.0, 0.0), (3.0, 0.0, 0.0), (2.8, 0.15, 0.0),
     ]
     for mx, my, mth, _tag in milestones[:max_milestones]:
+        if deadline is not None and time.perf_counter() > deadline:
+            return False, None
         seg1_list = rs.rs_sample_path_multi(
             sx, sy, sth, mx, my, mth,
-            MIN_TURN_RADIUS, step=step, max_paths=6)
+            MIN_TURN_RADIUS, step=step, max_paths=4)  # Reduced from 6
         seg1_ok = [s for s in seg1_list
                    if s and _check_traj_collision(s, coll_relaxed)]
         if not seg1_ok:
             continue
         for rwx, rwy, rwth in return_wps:
+            if deadline is not None and time.perf_counter() > deadline:
+                return False, None
             seg2_list = rs.rs_sample_path_multi(
                 mx, my, mth, rwx, rwy, rwth,
-                MIN_TURN_RADIUS, step=step, max_paths=12)
+                MIN_TURN_RADIUS, step=step, max_paths=6)  # Reduced from 12
             for seg2 in seg2_list:
+                if deadline is not None and time.perf_counter() > deadline:
+                    return False, None
                 if not seg2 or not _check_traj_collision(seg2, coll_relaxed):
                     continue
                 seg3_list = rs.rs_sample_path_multi(
                     rwx, rwy, rwth, RS_GOAL_X, RS_GOAL_Y, RS_GOAL_TH,
-                    MIN_TURN_RADIUS, step=step, max_paths=5)
+                    MIN_TURN_RADIUS, step=step, max_paths=3)  # Reduced from 5
                 for seg3 in seg3_list:
+                    if deadline is not None and time.perf_counter() > deadline:
+                        return False, None
                     if not seg3 or not _check_traj_collision(seg3, collision_fn):
                         continue
                     ex, ey, eth = seg3[-1]
@@ -323,7 +337,7 @@ def _make_heuristic_fn_v2(dijkstra_grid, start_d_goal,
 RECOVERY_STAGES = [
     {
         'name': 'fast',
-        'expand_limit': 8000,
+        'expand_limit': 12000,  # Increased from 8000
         'prim_limit': 80,
         'rs_radius': 4.0,
         'allow_uphill': 2.0,
@@ -332,7 +346,7 @@ RECOVERY_STAGES = [
     },
     {
         'name': 'robust',
-        'expand_limit': 25000,
+        'expand_limit': 40000,  # Increased from 25000
         'prim_limit': 100,
         'rs_radius': 6.0,
         'allow_uphill': 6.0,
@@ -341,7 +355,7 @@ RECOVERY_STAGES = [
     },
     {
         'name': 'aggressive',
-        'expand_limit': 80000,
+        'expand_limit': 100000,  # Increased from 80000
         'prim_limit': 120,
         'rs_radius': 10.0,
         'allow_uphill': 100.0,
@@ -425,12 +439,17 @@ def _phase0_turnaround(mx, my, mth, precomp_prim, no_corridor, fast_obstacles):
 
 def plan_path_robust_obs_v2(x0, y0, theta0, precomp_prim,
                              use_rs=True, stats=None, no_corridor=False,
-                             rs_expansion_radius=2.5, obstacles=None):
+                             rs_expansion_radius=2.5, obstacles=None,
+                             _time_budget=25.0):
     """
     Enhanced obstacle planner v2 with multi-stage recovery.
     Drop-in replacement for plan_path_robust_obs.
+
+    _time_budget: total wall-clock seconds before the planner gives up.
+                  Default 25s leaves a 5s margin under a typical 30s test timeout.
     """
     t_robust = time.perf_counter()
+    planner_deadline = t_robust + _time_budget
     if stats is None:
         stats = {}
 
@@ -451,6 +470,13 @@ def plan_path_robust_obs_v2(x0, y0, theta0, precomp_prim,
     dijkstra_grid.build_map(obstacles, start_x=x0, start_y=y0)
     _, start_d_goal = dijkstra_grid.get_heuristic(x0, y0)
 
+    # ── Exp-3c: Dijkstra unreachability early-exit ──
+    # If Dijkstra says start is unreachable (inf distance), fail fast
+    if start_d_goal == float('inf'):
+        stats.update(expanded=0, elapsed_ms=0.0, two_stage=False,
+                     level='FAILED_unreachable')
+        return False, None, None
+
     # ── Level-1: Pure RS ──
     if use_rs:
         rs_stats = {}
@@ -462,12 +488,15 @@ def plan_path_robust_obs_v2(x0, y0, theta0, precomp_prim,
             stats['level'] = 'L1_pure_rs'
             return True, acts, traj
 
-    # ── Level-1.5: Milestone RS bypass ──
-    if use_rs and obstacles:
+    # ── Level-1.5: Milestone RS bypass (skip for simple obstacles to save time) ──
+    # Only run milestone bypass if we have complex obstacles (>1) or tight space
+    run_milestone_bypass = use_rs and obstacles and len(obstacles) > 1
+    if run_milestone_bypass:
+        l15_deadline = min(time.perf_counter() + 2.0, planner_deadline)
         bypass_ok, bypass_traj = _try_milestone_rs_bypass(
             x0, y0, theta0, obstacles, coll_fn,
             fast_obstacles=fast_obstacles, no_corridor=no_corridor,
-            max_paths=10, max_milestones=20)
+            max_paths=8, max_milestones=15, deadline=l15_deadline)
         if bypass_ok and not _path_goes_behind_wall(bypass_traj) \
                 and not _path_is_unreasonable(bypass_traj, x0, y0):
             total_ms = round((time.perf_counter() - t_robust) * 1000.0, 1)
@@ -485,13 +514,18 @@ def plan_path_robust_obs_v2(x0, y0, theta0, precomp_prim,
     mx, my, mth = x0, y0, theta0
     phase0_acts = []
 
+    # Phase-0 turnaround only when facing away from goal
     if abs(mth) > 2.6 or (abs(mth) > 1.57 and mth * my < 0):
         phase0_acts, mx, my, mth = _phase0_turnaround(
             mx, my, mth, precomp_prim, no_corridor, fast_obstacles)
 
+    # For simple obstacles (1-2), skip expensive K-turn and go straight to A*
+    # K-turn is only beneficial for complex scenarios or large y-offsets
+    skip_kturn = fast_obstacles is not None and len(fast_obstacles) <= 2 and abs(my) < 2.0
+
     obs_tight_y = 0.2 if fast_obstacles else None
     acts1 = []
-    if phase0_acts or abs(my) > PREAPPROACH_Y_MAX or abs(mth) > 0.5 or fast_obstacles is not None:
+    if not skip_kturn and (phase0_acts or abs(my) > PREAPPROACH_Y_MAX or abs(mth) > 0.5 or fast_obstacles is not None):
         ok1_greedy, acts1_greedy, mx2, my2, mth2 = _k_turn_preposition_obs(
             mx, my, mth, precomp_prim, no_corridor, fast_obstacles,
             dijkstra_grid=dijkstra_grid, target_y_max=obs_tight_y)
@@ -500,7 +534,7 @@ def plan_path_robust_obs_v2(x0, y0, theta0, precomp_prim,
             mx, my, mth = mx2, my2, mth2
 
     stage15_acts = []
-    if abs(my) > 0.15:
+    if not skip_kturn and abs(my) > 0.15:
         s15_x_ceil = None
         if fast_obstacles:
             for obs_min_x, *_ in fast_obstacles:
@@ -522,17 +556,25 @@ def plan_path_robust_obs_v2(x0, y0, theta0, precomp_prim,
     prefix_acts = phase0_acts + acts1 + stage15_acts
     prefix_too_many_shifts = _count_gear_shifts(prefix_acts) > 8
 
-    # ── Level-1.8: 2D skeleton + RS stitching (fast, before A*) ──
-    if obstacles and not prefix_too_many_shifts:
+    # ── Level-1.8: 2D skeleton + RS stitching (skip for simple obstacles) ──
+    # Only run 2D skeleton if we have complex obstacles (>1) or very tight space
+    run_2d_skeleton = obstacles and not prefix_too_many_shifts and len(obstacles) > 1
+    if run_2d_skeleton:
+        l18_deadline = min(time.perf_counter() + 3.0, planner_deadline)
         coll_relaxed = coll_fn
         starts_2d = [(mx, my, mth, prefix_acts)]
         if (mx, my) != (x0, y0):
             starts_2d.append((x0, y0, theta0, []))
         for sx2, sy2, sth2, prefix_acts in starts_2d:
+            if time.perf_counter() > l18_deadline:
+                break
             for spc in [2.5, 1.5]:
+                if time.perf_counter() > l18_deadline:
+                    break
                 fb2d_ok, fb2d_traj = plan_2d_fallback(
                     dijkstra_grid, sx2, sy2, sth2, coll_relaxed,
-                    spacing=spc, max_rs_paths=12, obstacles=obstacles)
+                    spacing=spc, max_rs_paths=12, obstacles=obstacles,
+                    deadline=l18_deadline)
                 if fb2d_ok and not _path_goes_behind_wall(fb2d_traj) and not _path_is_unreasonable(fb2d_traj, sx2, sy2):
                     total_ms = round((time.perf_counter() - t_robust) * 1000.0, 1)
                     stats.update(
@@ -545,9 +587,20 @@ def plan_path_robust_obs_v2(x0, y0, theta0, precomp_prim,
 
     # ── Level-2: Multi-stage A* from K-turn position ──
     _, mid_d_goal = dijkstra_grid.get_heuristic(mx, my)
+    total_expanded = 0  # accumulate across all A* stages for diagnostics
+
+    # Exp-3e: Per-stage time allocation (in seconds)
+    STAGE_TIME_BUDGETS = [5.0, 10.0, 20.0]  # fast, robust, aggressive - increased
 
     if not prefix_too_many_shifts:
         for stage_idx, stage in enumerate(RECOVERY_STAGES):
+            stage_start = time.perf_counter()
+            # Calculate per-stage deadline
+            stage_budget = STAGE_TIME_BUDGETS[stage_idx] if stage_idx < len(STAGE_TIME_BUDGETS) else 10.0
+            stage_deadline = min(stage_start + stage_budget, planner_deadline)
+
+            if stage_start > planner_deadline:
+                break
             st = {}
             rs_expand = _make_rs_expand_fn_multi(
                 coll_fn, max(rs_expansion_radius, stage['rs_radius']),
@@ -568,7 +621,9 @@ def plan_path_robust_obs_v2(x0, y0, theta0, precomp_prim,
                 _prim_limit=dyn_prim,
                 _expand_limit=stage['expand_limit'],
                 _rs_expand=use_rs,
-                rs_expansion_radius=max(rs_expansion_radius, stage['rs_radius']))
+                rs_expansion_radius=max(rs_expansion_radius, stage['rs_radius']),
+                deadline=stage_deadline)  # Use per-stage deadline
+            total_expanded += st.get('expanded', 0)
 
             if ok2:
                 if rs_traj is None and not st.get('rs_expansion', False):
@@ -608,7 +663,16 @@ def plan_path_robust_obs_v2(x0, y0, theta0, precomp_prim,
                 return True, final_acts, rs_traj
 
     # ── Level-3: Fallback from original start (robust + aggressive only) ──
+    # Exp-3e: Per-stage time allocation for fallback (robust=7s, aggressive=remaining)
+    FALLBACK_STAGE_BUDGETS = [7.0, 15.0]  # for robust, aggressive
+
     for stage_idx, stage in enumerate(RECOVERY_STAGES[1:], 1):
+        fb_stage_start = time.perf_counter()
+        fb_budget = FALLBACK_STAGE_BUDGETS[stage_idx-1] if (stage_idx-1) < len(FALLBACK_STAGE_BUDGETS) else 10.0
+        fb_stage_deadline = min(fb_stage_start + fb_budget, planner_deadline)
+
+        if fb_stage_start > planner_deadline:
+            break
         st_fb = {}
         rs_expand = _make_rs_expand_fn_multi(
             coll_fn, max(rs_expansion_radius, stage['rs_radius']),
@@ -625,7 +689,9 @@ def plan_path_robust_obs_v2(x0, y0, theta0, precomp_prim,
             _expand_limit=stage['expand_limit'],
             _prim_limit=stage['prim_limit'],
             _rs_expand=use_rs,
-            rs_expansion_radius=max(rs_expansion_radius, stage['rs_radius']))
+            rs_expansion_radius=max(rs_expansion_radius, stage['rs_radius']),
+            deadline=fb_stage_deadline)  # Use per-stage deadline
+        total_expanded += st_fb.get('expanded', 0)
 
         if ok_fb:
             if traj_fb is None and not st_fb.get('rs_expansion', False):
@@ -663,7 +729,8 @@ def plan_path_robust_obs_v2(x0, y0, theta0, precomp_prim,
     # All stages exhausted
     total_ms = round((time.perf_counter() - t_robust) * 1000.0, 1)
     stats.update(
-        expanded=0, elapsed_ms=total_ms, two_stage=True, stage1_ms=t1_ms,
-        use_rs=use_rs, no_corridor=no_corridor, level='FAILED_all_stages',
+        expanded=total_expanded, elapsed_ms=total_ms, two_stage=True,
+        stage1_ms=t1_ms, use_rs=use_rs, no_corridor=no_corridor,
+        level='FAILED_all_stages',
     )
     return False, None, None

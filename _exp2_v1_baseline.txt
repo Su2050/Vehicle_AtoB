@@ -1,0 +1,463 @@
+
+####################################################################################################
+#  Running with planner: v1
+####################################################################################################
+
+Planner: plan_path_robust_obs
+
+[1/15] S01_open_field (4 cases, expect=PASS)...
+  [1/4] near_goal_straight: ok=True OK (0ms, exp=0)
+  [2/4] slight_offset: ok=True OK (0ms, exp=0)
+  [3/4] mid_dist_offset: ok=True OK (0ms, exp=0)
+  [4/4] far_straight: ok=True OK (0ms, exp=0)
+
+[2/15] S02_single_block (4 cases, expect=PASS)...
+[A*] expanded=5000, f=88.9, cx=5.55, cy=-0.54, elapsed=1541ms
+[A*] expanded=10000, f=89.2, cx=5.48, cy=-0.60, elapsed=3106ms
+[A*] expanded=15000, f=87.1, cx=5.65, cy=-0.69, elapsed=4702ms
+[A*] expanded=20000, f=91.0, cx=5.40, cy=-0.44, elapsed=6409ms
+[A*] expanded=25000, f=84.4, cx=5.34, cy=-0.75, elapsed=8013ms
+[A*] expanded=30000, f=84.1, cx=5.39, cy=-0.78, elapsed=9589ms
+[A*] expanded=35000, f=89.9, cx=5.79, cy=-0.57, elapsed=11194ms
+[A*] expanded=40000, f=92.4, cx=5.39, cy=-0.68, elapsed=12852ms
+[A*] expanded=45000, f=92.8, cx=5.75, cy=-0.70, elapsed=14428ms
+[A*] expanded=50000, f=88.5, cx=5.45, cy=-0.49, elapsed=16020ms
+[A*] expanded=55000, f=86.5, cx=5.59, cy=-0.63, elapsed=17618ms
+[A*] expanded=60000, f=93.3, cx=5.63, cy=-0.72, elapsed=19223ms
+[A*] expanded=5000, f=88.9, cx=5.55, cy=-0.54, elapsed=1580ms
+[A*] expanded=10000, f=89.2, cx=5.48, cy=-0.60, elapsed=3179ms
+[A*] expanded=15000, f=87.1, cx=5.65, cy=-0.69, elapsed=4808ms
+[A*] expanded=20000, f=91.0, cx=5.40, cy=-0.44, elapsed=6355ms
+[A*] expanded=25000, f=84.4, cx=5.34, cy=-0.75, elapsed=7962ms
+  [1/4] blocked_direct: ok=False MISMATCH TIMEOUT (30022ms, exp=0)
+[A*] expanded=5000, f=93.6, cx=5.14, cy=1.51, elapsed=2440ms
+[A*] expanded=10000, f=93.1, cx=4.41, cy=1.61, elapsed=4605ms
+[A*] expanded=15000, f=96.9, cx=3.64, cy=1.56, elapsed=6991ms
+[A*] expanded=20000, f=90.8, cx=4.17, cy=1.53, elapsed=9228ms
+[A*] expanded=25000, f=95.7, cx=4.27, cy=1.64, elapsed=11381ms
+[A*] expanded=30000, f=99.6, cx=4.74, cy=1.67, elapsed=13675ms
+[A*] expanded=35000, f=100.2, cx=5.38, cy=1.67, elapsed=15856ms
+[A*] expanded=40000, f=101.0, cx=4.05, cy=1.61, elapsed=18083ms
+[A*] expanded=45000, f=101.6, cx=5.15, cy=1.57, elapsed=20381ms
+[A*] expanded=5000, f=83.0, cx=5.44, cy=1.45, elapsed=2440ms
+[A*] expanded=10000, f=82.6, cx=5.35, cy=1.37, elapsed=4609ms
+[A*] expanded=15000, f=86.3, cx=4.04, cy=1.62, elapsed=6835ms
+[A*] expanded=20000, f=87.4, cx=5.43, cy=1.47, elapsed=9110ms
+  [2/4] offset_upper: ok=False MISMATCH TIMEOUT (30016ms, exp=0)
+[A*] expanded=5000, f=89.9, cx=4.23, cy=-1.62, elapsed=2514ms
+[A*] expanded=10000, f=94.4, cx=5.37, cy=-1.52, elapsed=4937ms
+[A*] expanded=15000, f=95.7, cx=4.61, cy=-1.61, elapsed=7168ms
+[A*] expanded=20000, f=96.4, cx=4.18, cy=-1.61, elapsed=9603ms
+[A*] expanded=25000, f=91.4, cx=4.67, cy=-1.47, elapsed=11998ms
+[A*] expanded=30000, f=97.1, cx=5.23, cy=-1.57, elapsed=14293ms
+[A*] expanded=35000, f=97.4, cx=5.42, cy=-1.32, elapsed=16676ms
+[A*] expanded=40000, f=98.0, cx=5.23, cy=-1.59, elapsed=18860ms
+[A*] expanded=5000, f=77.7, cx=5.03, cy=-1.39, elapsed=2494ms
+[A*] expanded=10000, f=81.6, cx=4.90, cy=-1.49, elapsed=4814ms
+[A*] expanded=15000, f=81.9, cx=5.40, cy=-1.47, elapsed=7264ms
+  [3/4] offset_lower: ok=False MISMATCH TIMEOUT (30011ms, exp=0)
+  [4/4] facing_away: ok=True OK (472ms, exp=0)
+
+[3/15] S03_long_wall (4 cases, expect=PASS)...
+[A*] expanded=5000, f=150.0, cx=6.84, cy=2.33, elapsed=2872ms
+[A*] expanded=10000, f=151.7, cx=6.11, cy=2.38, elapsed=5219ms
+[A*] expanded=15000, f=147.2, cx=6.51, cy=2.32, elapsed=7622ms
+[A*] expanded=20000, f=150.6, cx=6.59, cy=2.37, elapsed=9998ms
+[A*] expanded=25000, f=153.3, cx=6.57, cy=2.25, elapsed=12332ms
+[A*] expanded=30000, f=153.1, cx=6.43, cy=2.25, elapsed=14753ms
+[A*] expanded=35000, f=152.7, cx=6.57, cy=2.24, elapsed=17177ms
+[A*] expanded=40000, f=151.3, cx=6.35, cy=2.20, elapsed=19572ms
+[A*] expanded=5000, f=119.5, cx=5.10, cy=0.03, elapsed=2377ms
+[A*] expanded=10000, f=121.2, cx=4.84, cy=0.07, elapsed=4593ms
+[A*] expanded=15000, f=122.4, cx=5.75, cy=0.04, elapsed=6814ms
+  [1/4] behind_wall_center: ok=False MISMATCH TIMEOUT (30011ms, exp=0)
+[A*] expanded=5000, f=89.7, cx=2.09, cy=-4.75, elapsed=1371ms
+[A*] expanded=10000, f=90.4, cx=2.11, cy=-4.56, elapsed=2805ms
+[A*] expanded=15000, f=91.0, cx=2.26, cy=-4.92, elapsed=4359ms
+[A*] expanded=20000, f=95.0, cx=2.30, cy=-4.62, elapsed=5948ms
+[A*] expanded=25000, f=95.9, cx=2.19, cy=-4.78, elapsed=7529ms
+[A*] expanded=30000, f=89.4, cx=2.33, cy=-4.66, elapsed=9011ms
+[A*] expanded=35000, f=90.7, cx=2.93, cy=-4.68, elapsed=10538ms
+[A*] expanded=40000, f=90.7, cx=2.93, cy=-4.71, elapsed=12146ms
+[A*] expanded=45000, f=95.7, cx=2.74, cy=-4.68, elapsed=13765ms
+[A*] expanded=50000, f=96.6, cx=2.41, cy=-4.77, elapsed=15386ms
+[A*] expanded=55000, f=97.1, cx=2.53, cy=-4.75, elapsed=17028ms
+[A*] expanded=60000, f=97.6, cx=2.16, cy=-4.92, elapsed=18611ms
+[A*] expanded=65000, f=88.9, cx=2.08, cy=-4.58, elapsed=20193ms
+[A*] expanded=5000, f=146.3, cx=6.87, cy=-3.85, elapsed=1546ms
+[A*] expanded=10000, f=149.5, cx=7.03, cy=-3.91, elapsed=3218ms
+[A*] expanded=15000, f=134.3, cx=5.19, cy=-4.91, elapsed=4720ms
+[A*] expanded=20000, f=136.1, cx=5.33, cy=-4.90, elapsed=6119ms
+[A*] expanded=25000, f=135.8, cx=5.42, cy=-4.90, elapsed=7522ms
+[A*] expanded=30000, f=140.7, cx=5.39, cy=-4.77, elapsed=9063ms
+  [2/4] behind_wall_lower: ok=False MISMATCH TIMEOUT (30014ms, exp=0)
+  [3/4] near_gap_side: ok=True OK (351ms, exp=0)
+[A*] expanded=5000, f=150.9, cx=5.83, cy=2.43, elapsed=2749ms
+[A*] expanded=10000, f=149.5, cx=6.81, cy=2.27, elapsed=5084ms
+[A*] expanded=15000, f=151.4, cx=6.87, cy=2.17, elapsed=7555ms
+[A*] expanded=20000, f=148.1, cx=5.98, cy=2.34, elapsed=9896ms
+[A*] expanded=25000, f=148.1, cx=6.78, cy=2.11, elapsed=12239ms
+[A*] expanded=30000, f=151.4, cx=6.55, cy=2.17, elapsed=14745ms
+[A*] expanded=35000, f=146.7, cx=6.75, cy=2.27, elapsed=16948ms
+[A*] expanded=40000, f=150.6, cx=6.89, cy=2.27, elapsed=19041ms
+[A*] expanded=5000, f=141.1, cx=5.21, cy=0.56, elapsed=2524ms
+[A*] expanded=10000, f=143.5, cx=5.25, cy=0.83, elapsed=4872ms
+[A*] expanded=15000, f=145.8, cx=5.37, cy=1.00, elapsed=7187ms
+  [4/4] wall_parallel_heading: ok=False MISMATCH TIMEOUT (30013ms, exp=0)
+
+[4/15] S04_narrow_passage (3 cases, expect=PASS)...
+  [1/3] passage_center: ok=True OK (12ms, exp=0)
+  [2/3] passage_offset_upper: ok=True OK (12ms, exp=0)
+  [3/3] passage_offset_lower: ok=True OK (12ms, exp=0)
+
+[5/15] S05_u_trap (3 cases, expect=PASS)...
+[A*] expanded=5000, f=189.2, cx=8.98, cy=-0.32, elapsed=2073ms
+[A*] expanded=10000, f=190.0, cx=8.72, cy=-0.25, elapsed=4126ms
+[A*] expanded=15000, f=188.6, cx=8.85, cy=-0.31, elapsed=6216ms
+[A*] expanded=20000, f=190.2, cx=8.51, cy=-0.04, elapsed=8248ms
+[A*] expanded=25000, f=188.4, cx=8.35, cy=-0.15, elapsed=10285ms
+[A*] expanded=30000, f=187.4, cx=8.90, cy=-0.45, elapsed=12314ms
+[A*] expanded=35000, f=189.0, cx=8.66, cy=-0.15, elapsed=14321ms
+[A*] expanded=40000, f=188.7, cx=8.62, cy=-0.25, elapsed=16408ms
+[A*] expanded=45000, f=186.8, cx=8.83, cy=-0.47, elapsed=18432ms
+[A*] expanded=50000, f=188.6, cx=8.93, cy=-0.30, elapsed=20410ms
+[A*] expanded=5000, f=189.2, cx=8.98, cy=-0.32, elapsed=2072ms
+[A*] expanded=10000, f=190.0, cx=8.72, cy=-0.25, elapsed=4104ms
+[A*] expanded=15000, f=188.6, cx=8.85, cy=-0.31, elapsed=6089ms
+[A*] expanded=20000, f=190.2, cx=8.51, cy=-0.04, elapsed=8166ms
+  [1/3] u_center_facing_wall: ok=False MISMATCH TIMEOUT (30011ms, exp=0)
+[A*] expanded=5000, f=185.7, cx=7.46, cy=-0.43, elapsed=2079ms
+[A*] expanded=10000, f=188.3, cx=7.47, cy=0.65, elapsed=4186ms
+[A*] expanded=15000, f=189.4, cx=7.52, cy=0.21, elapsed=6300ms
+[A*] expanded=20000, f=186.7, cx=7.75, cy=-0.53, elapsed=8452ms
+[A*] expanded=25000, f=190.4, cx=7.51, cy=0.24, elapsed=10618ms
+[A*] expanded=30000, f=190.7, cx=7.67, cy=0.57, elapsed=12800ms
+[A*] expanded=35000, f=187.8, cx=7.70, cy=-0.39, elapsed=14968ms
+[A*] expanded=40000, f=191.2, cx=7.53, cy=0.00, elapsed=17144ms
+[A*] expanded=45000, f=191.4, cx=7.91, cy=0.70, elapsed=19329ms
+[A*] expanded=5000, f=185.7, cx=7.46, cy=-0.43, elapsed=2118ms
+[A*] expanded=10000, f=188.3, cx=7.47, cy=0.65, elapsed=4238ms
+[A*] expanded=15000, f=189.4, cx=7.52, cy=0.21, elapsed=6362ms
+  [2/3] u_center_facing_opening: ok=False MISMATCH TIMEOUT (30014ms, exp=0)
+[A*] expanded=5000, f=206.7, cx=6.52, cy=0.39, elapsed=2163ms
+[A*] expanded=10000, f=208.1, cx=6.45, cy=0.05, elapsed=4305ms
+[A*] expanded=15000, f=209.0, cx=6.43, cy=-0.17, elapsed=6443ms
+[A*] expanded=20000, f=210.0, cx=6.51, cy=0.15, elapsed=8734ms
+[A*] expanded=25000, f=210.9, cx=6.41, cy=0.58, elapsed=10921ms
+[A*] expanded=30000, f=210.8, cx=6.54, cy=0.71, elapsed=13058ms
+[A*] expanded=35000, f=212.1, cx=6.57, cy=0.26, elapsed=15325ms
+[A*] expanded=40000, f=212.6, cx=6.53, cy=0.58, elapsed=17472ms
+[A*] expanded=45000, f=213.0, cx=6.49, cy=0.68, elapsed=19666ms
+[A*] expanded=5000, f=206.7, cx=6.52, cy=0.39, elapsed=2153ms
+[A*] expanded=10000, f=208.1, cx=6.45, cy=0.05, elapsed=4282ms
+[A*] expanded=15000, f=209.0, cx=6.43, cy=-0.17, elapsed=6466ms
+[A*] expanded=20000, f=210.0, cx=6.51, cy=0.15, elapsed=8728ms
+  [3/3] u_upper: ok=False MISMATCH TIMEOUT (30010ms, exp=0)
+
+[6/15] S06_unreachable (2 cases, expect=FAIL)...
+[A*] expanded=5000, f=753.7, cx=2.67, cy=4.85, elapsed=1555ms
+[A*] expanded=10000, f=754.4, cx=2.47, cy=4.85, elapsed=3070ms
+[A*] expanded=15000, f=754.9, cx=2.37, cy=4.88, elapsed=4583ms
+[A*] expanded=20000, f=755.2, cx=2.25, cy=4.83, elapsed=6061ms
+[A*] expanded=25000, f=755.5, cx=2.13, cy=4.67, elapsed=7413ms
+[A*] expanded=30000, f=755.8, cx=2.16, cy=4.99, elapsed=8627ms
+[A*] expanded=35000, f=757.9, cx=3.46, cy=4.46, elapsed=9872ms
+[A*] expanded=40000, f=758.9, cx=2.93, cy=4.47, elapsed=11399ms
+[A*] expanded=45000, f=759.5, cx=2.69, cy=4.69, elapsed=12976ms
+[A*] expanded=50000, f=759.8, cx=3.39, cy=4.47, elapsed=14630ms
+[A*] expanded=55000, f=760.1, cx=2.63, cy=4.55, elapsed=16141ms
+[A*] expanded=60000, f=760.4, cx=2.49, cy=4.82, elapsed=17676ms
+[A*] expanded=65000, f=760.6, cx=3.04, cy=4.41, elapsed=19246ms
+[A*] expanded=5000, f=753.7, cx=2.67, cy=4.85, elapsed=1568ms
+[A*] expanded=10000, f=754.4, cx=2.47, cy=4.85, elapsed=3076ms
+[A*] expanded=15000, f=754.9, cx=2.37, cy=4.88, elapsed=4553ms
+[A*] expanded=20000, f=755.2, cx=2.25, cy=4.83, elapsed=6053ms
+[A*] expanded=25000, f=755.5, cx=2.13, cy=4.67, elapsed=7392ms
+[A*] expanded=30000, f=755.8, cx=2.16, cy=4.99, elapsed=8669ms
+  [1/2] direct_approach: ok=False OK TIMEOUT (30013ms, exp=0)
+[A*] expanded=5000, f=753.7, cx=5.38, cy=3.93, elapsed=1570ms
+[A*] expanded=10000, f=754.4, cx=5.23, cy=4.23, elapsed=3112ms
+[A*] expanded=15000, f=754.8, cx=5.11, cy=4.06, elapsed=4777ms
+[A*] expanded=20000, f=755.1, cx=5.03, cy=4.09, elapsed=6407ms
+[A*] expanded=25000, f=755.4, cx=4.98, cy=4.03, elapsed=7999ms
+[A*] expanded=30000, f=755.6, cx=4.92, cy=4.13, elapsed=9641ms
+[A*] expanded=35000, f=755.8, cx=4.87, cy=4.12, elapsed=11283ms
+[A*] expanded=40000, f=755.9, cx=4.94, cy=4.55, elapsed=12889ms
+[A*] expanded=45000, f=756.1, cx=4.83, cy=3.75, elapsed=14504ms
+[A*] expanded=50000, f=756.2, cx=4.76, cy=4.06, elapsed=16110ms
+[A*] expanded=55000, f=756.3, cx=4.74, cy=4.26, elapsed=17868ms
+[A*] expanded=60000, f=756.5, cx=4.73, cy=4.35, elapsed=19490ms
+[A*] expanded=5000, f=753.7, cx=5.38, cy=3.93, elapsed=1571ms
+[A*] expanded=10000, f=754.4, cx=5.23, cy=4.23, elapsed=3248ms
+[A*] expanded=15000, f=754.8, cx=5.11, cy=4.06, elapsed=4821ms
+[A*] expanded=20000, f=755.1, cx=5.03, cy=4.09, elapsed=6407ms
+[A*] expanded=25000, f=755.4, cx=4.98, cy=4.03, elapsed=8077ms
+  [2/2] angled_approach: ok=False OK TIMEOUT (30022ms, exp=0)
+
+[7/15] S07a_random_seed42 (2 cases, expect=PASS)...
+  [1/2] corridor_center: ok=True OK (13ms, exp=0)
+  [2/2] corridor_offset: ok=True OK (13ms, exp=0)
+
+[8/15] S07b_random_seed123 (2 cases, expect=PASS)...
+  [1/2] corridor_center: ok=True OK (11ms, exp=0)
+  [2/2] corridor_offset: ok=True OK (11ms, exp=0)
+
+[9/15] S07c_random_seed2026 (2 cases, expect=PASS)...
+  [1/2] corridor_center: ok=True OK (12ms, exp=0)
+  [2/2] corridor_offset: ok=True OK (12ms, exp=0)
+
+[10/15] S08_start_equals_goal (4 cases, expect=PASS)...
+  [1/4] exact_goal: ok=True OK (0ms, exp=1)
+  [2/4] near_goal_micro_offset: ok=True OK (0ms, exp=0)
+  [3/4] goal_boundary: ok=True OK (0ms, exp=1)
+  [4/4] close_reverse_180: ok=True OK (0ms, exp=0)
+
+[11/15] S09_dead_end_reverse (3 cases, expect=PASS)...
+  [1/3] deep_facing_dead_end: ok=True OK (12ms, exp=0)
+  [2/3] deep_facing_opening: ok=True OK (801ms, exp=1)
+  [3/3] mid_corridor_angled: ok=True OK (12ms, exp=0)
+
+[12/15] S10_corridor_straight (3 cases, expect=PASS)...
+  [1/3] corridor_center: ok=True OK (12ms, exp=0)
+  [2/3] corridor_upper: ok=True OK (12ms, exp=0)
+  [3/3] corridor_lower: ok=True OK (12ms, exp=0)
+
+[13/15] S11_l_barrier (2 cases, expect=PASS)...
+[A*] expanded=5000, f=229.4, cx=5.88, cy=1.40, elapsed=2751ms
+[A*] expanded=10000, f=230.0, cx=5.23, cy=1.44, elapsed=5471ms
+[A*] expanded=15000, f=231.1, cx=6.93, cy=-1.32, elapsed=8443ms
+[A*] expanded=20000, f=231.2, cx=7.09, cy=-1.57, elapsed=11397ms
+[A*] expanded=25000, f=230.9, cx=6.77, cy=-0.50, elapsed=14138ms
+[A*] expanded=30000, f=229.5, cx=6.93, cy=-1.37, elapsed=16882ms
+[A*] expanded=35000, f=228.7, cx=6.65, cy=-0.94, elapsed=19668ms
+[A*] expanded=5000, f=170.4, cx=4.83, cy=-0.21, elapsed=2764ms
+[A*] expanded=10000, f=168.9, cx=5.04, cy=-0.20, elapsed=5442ms
+[A*] expanded=15000, f=172.5, cx=4.84, cy=-0.11, elapsed=8008ms
+  [1/2] must_route_around_L: ok=False MISMATCH TIMEOUT (30007ms, exp=0)
+[A*] expanded=5000, f=136.2, cx=4.77, cy=-3.35, elapsed=1896ms
+[A*] expanded=10000, f=132.1, cx=4.79, cy=-4.61, elapsed=3810ms
+[A*] expanded=15000, f=134.9, cx=4.73, cy=-4.85, elapsed=5507ms
+[A*] expanded=20000, f=136.2, cx=4.80, cy=-3.37, elapsed=7251ms
+[A*] expanded=25000, f=137.3, cx=4.52, cy=-4.89, elapsed=9017ms
+[A*] expanded=30000, f=132.5, cx=4.59, cy=-4.82, elapsed=10831ms
+[A*] expanded=35000, f=131.4, cx=4.69, cy=-4.79, elapsed=12600ms
+[A*] expanded=40000, f=131.8, cx=4.51, cy=-4.96, elapsed=14346ms
+[A*] expanded=45000, f=138.0, cx=4.75, cy=-4.57, elapsed=16174ms
+[A*] expanded=50000, f=138.2, cx=4.81, cy=-3.16, elapsed=17975ms
+[A*] expanded=55000, f=138.5, cx=4.89, cy=-4.95, elapsed=19838ms
+[A*] expanded=5000, f=132.6, cx=4.77, cy=-3.29, elapsed=1892ms
+[A*] expanded=10000, f=132.5, cx=4.66, cy=-4.83, elapsed=3806ms
+[A*] expanded=15000, f=134.9, cx=4.80, cy=-4.85, elapsed=5482ms
+[A*] expanded=20000, f=136.3, cx=4.73, cy=-4.38, elapsed=7319ms
+[A*] expanded=25000, f=137.3, cx=4.71, cy=-3.73, elapsed=9098ms
+  [2/2] far_lower_angled: ok=False MISMATCH TIMEOUT (30011ms, exp=0)
+
+[14/15] S12_goal_covered (2 cases, expect=FAIL)...
+  [1/2] goal_blocked: ok=False OK (0ms, exp=0)
+  [2/2] goal_blocked_angled: ok=False OK (0ms, exp=0)
+
+[15/15] S13_force_fallback (1 cases, expect=PASS)...
+[A*] expanded=5000, f=79.6, cx=4.59, cy=1.42, elapsed=2398ms
+[A*] expanded=10000, f=80.6, cx=4.63, cy=1.41, elapsed=4703ms
+[A*] expanded=15000, f=82.9, cx=5.35, cy=1.51, elapsed=6978ms
+[A*] expanded=20000, f=83.5, cx=4.52, cy=1.42, elapsed=9343ms
+[A*] expanded=25000, f=84.7, cx=4.93, cy=1.45, elapsed=11555ms
+[A*] expanded=30000, f=85.5, cx=4.61, cy=1.48, elapsed=13735ms
+[A*] expanded=35000, f=79.2, cx=4.55, cy=1.37, elapsed=15953ms
+[A*] expanded=40000, f=86.4, cx=3.85, cy=1.37, elapsed=18094ms
+[A*] expanded=45000, f=88.0, cx=4.93, cy=1.55, elapsed=20334ms
+[A*] expanded=5000, f=95.7, cx=5.68, cy=-0.04, elapsed=2148ms
+[A*] expanded=10000, f=97.3, cx=6.41, cy=0.18, elapsed=4292ms
+[A*] expanded=15000, f=98.4, cx=5.59, cy=-0.08, elapsed=6426ms
+[A*] expanded=20000, f=99.2, cx=6.40, cy=0.06, elapsed=8563ms
+  [1/1] simple_block_low_budget: ok=False MISMATCH TIMEOUT (30017ms, exp=0)
+====================================================================================================
+  COMPREHENSIVE OBSTACLE PLANNING TEST REPORT
+  Time: 2026-02-24 02:30:14
+====================================================================================================
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  Scenario: S01_open_field
+  Note: No obstacles — Level-1 Pure RS should handle most
+  Obstacles: 0, Expected: PASS
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  Label                          | Pos                    | OK?   | Match | ms        | Exp     | Level            | Detail
+  -------------------------------+------------------------+-------+-------+-----------+---------+------------------+---------------------
+  near_goal_straight             | (2.5,  0.0,   0°) | YES   | OK    |       0ms |       0 | L1_pure_rs       | 
+  slight_offset                  | (4.0,  0.5,  17°) | YES   | OK    |       0ms |       0 | L1_pure_rs       | 
+  mid_dist_offset                | (5.0, -1.0, -29°) | YES   | OK    |       0ms |       0 | L1_pure_rs       | 
+  far_straight                   | (7.0,  0.0,   0°) | YES   | OK    |       0ms |       0 | L1_pure_rs       | 
+  Summary: 4/4 match expected, avg 0ms
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  Scenario: S02_single_block
+  Note: One block on direct line — must detour
+  Obstacles: 1, Expected: PASS
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  Label                          | Pos                    | OK?   | Match | ms        | Exp     | Level            | Detail
+  -------------------------------+------------------------+-------+-------+-----------+---------+------------------+---------------------
+  blocked_direct                 | (5.0,  0.0,   0°) | NO    | FAIL  |   30022ms |       0 |                  | TIMEOUT
+  offset_upper                   | (5.0,  1.5, -17°) | NO    | FAIL  |   30016ms |       0 |                  | TIMEOUT
+  offset_lower                   | (5.0, -1.5,  17°) | NO    | FAIL  |   30011ms |       0 |                  | TIMEOUT
+  facing_away                    | (6.0,  0.0, 180°) | YES   | OK    |     472ms |       0 | L2_two_stage     | 
+  Summary: 1/4 match expected, avg 22630ms
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  Scenario: S03_long_wall
+  Note: Wall y∈[-3.5,1.5], gap at y>1.5 — includes 90° heading parallel to wall
+  Obstacles: 1, Expected: PASS
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  Label                          | Pos                    | OK?   | Match | ms        | Exp     | Level            | Detail
+  -------------------------------+------------------------+-------+-------+-----------+---------+------------------+---------------------
+  behind_wall_center             | (5.0,  0.0,   0°) | NO    | FAIL  |   30011ms |       0 |                  | TIMEOUT
+  behind_wall_lower              | (5.0, -2.0,   0°) | NO    | FAIL  |   30014ms |       0 |                  | TIMEOUT
+  near_gap_side                  | (7.0,  2.5,   0°) | YES   | OK    |     351ms |       0 | L2_two_stage     | 
+  wall_parallel_heading          | (5.0, -2.5,  90°) | NO    | FAIL  |   30013ms |       0 |                  | TIMEOUT
+  Summary: 1/4 match expected, avg 22597ms
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  Scenario: S04_narrow_passage
+  Note: Gap y∈[-0.6,0.6]=1.2m, vehicle radius 0.1m — tight passage
+  Obstacles: 2, Expected: PASS
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  Label                          | Pos                    | OK?   | Match | ms        | Exp     | Level            | Detail
+  -------------------------------+------------------------+-------+-------+-----------+---------+------------------+---------------------
+  passage_center                 | (5.0,  0.0,   0°) | YES   | OK    |       0ms |       0 | L1_pure_rs       | 
+  passage_offset_upper           | (6.0,  0.3, -11°) | YES   | OK    |       0ms |       0 | L1_pure_rs       | 
+  passage_offset_lower           | (6.0, -0.3,  11°) | YES   | OK    |       0ms |       0 | L1_pure_rs       | 
+  Summary: 3/3 match expected, avg 0ms
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  Scenario: S05_u_trap
+  Note: U-trap x∈[5.0,8.0], y∈[-1.5,1.5], opening at x>8.0 — must escape +x then route to goal
+  Obstacles: 3, Expected: PASS
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  Label                          | Pos                    | OK?   | Match | ms        | Exp     | Level            | Detail
+  -------------------------------+------------------------+-------+-------+-----------+---------+------------------+---------------------
+  u_center_facing_wall           | (6.5,  0.0,   0°) | NO    | FAIL  |   30011ms |       0 |                  | TIMEOUT
+  u_center_facing_opening        | (7.0,  0.0, 180°) | NO    | FAIL  |   30014ms |       0 |                  | TIMEOUT
+  u_upper                        | (6.5,  1.0, -90°) | NO    | FAIL  |   30010ms |       0 |                  | TIMEOUT
+  Summary: 0/3 match expected, avg 30012ms
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  Scenario: S06_unreachable
+  Note: Full-height wall x∈[2.4,3.2] blocks all access to goal — must return failure
+  Obstacles: 1, Expected: FAIL
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  Label                          | Pos                    | OK?   | Match | ms        | Exp     | Level            | Detail
+  -------------------------------+------------------------+-------+-------+-----------+---------+------------------+---------------------
+  direct_approach                | (5.0,  0.0,   0°) | NO    | OK    |   30013ms |       0 |                  | TIMEOUT
+  angled_approach                | (5.0,  2.0, -29°) | NO    | OK    |   30022ms |       0 |                  | TIMEOUT
+  Summary: 2/2 match expected, avg 30017ms
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  Scenario: S07a_random_seed42
+  Note: Random (seed=42) with y=0 corridor width 1.8m — guaranteed passable
+  Obstacles: 2, Expected: PASS
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  Label                          | Pos                    | OK?   | Match | ms        | Exp     | Level            | Detail
+  -------------------------------+------------------------+-------+-------+-----------+---------+------------------+---------------------
+  corridor_center                | (6.0,  0.0,   0°) | YES   | OK    |       0ms |       0 | L1_pure_rs       | 
+  corridor_offset                | (7.0,  0.3, -11°) | YES   | OK    |       0ms |       0 | L1_pure_rs       | 
+  Summary: 2/2 match expected, avg 0ms
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  Scenario: S07b_random_seed123
+  Note: Random (seed=123) with y=0 corridor width 1.8m
+  Obstacles: 6, Expected: PASS
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  Label                          | Pos                    | OK?   | Match | ms        | Exp     | Level            | Detail
+  -------------------------------+------------------------+-------+-------+-----------+---------+------------------+---------------------
+  corridor_center                | (6.0,  0.0,   0°) | YES   | OK    |       0ms |       0 | L1_pure_rs       | 
+  corridor_offset                | (7.0, -0.3,  11°) | YES   | OK    |       0ms |       0 | L1_pure_rs       | 
+  Summary: 2/2 match expected, avg 0ms
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  Scenario: S07c_random_seed2026
+  Note: Random (seed=2026) with y=0 corridor width 1.8m
+  Obstacles: 3, Expected: PASS
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  Label                          | Pos                    | OK?   | Match | ms        | Exp     | Level            | Detail
+  -------------------------------+------------------------+-------+-------+-----------+---------+------------------+---------------------
+  corridor_center                | (6.0,  0.0,   0°) | YES   | OK    |       0ms |       0 | L1_pure_rs       | 
+  corridor_offset                | (5.5,  0.5, -17°) | YES   | OK    |       0ms |       0 | L1_pure_rs       | 
+  Summary: 2/2 match expected, avg 0ms
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  Scenario: S08_start_equals_goal
+  Note: Start inside/near goal region — includes extreme 180° reversal at close range
+  Obstacles: 0, Expected: PASS
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  Label                          | Pos                    | OK?   | Match | ms        | Exp     | Level            | Detail
+  -------------------------------+------------------------+-------+-------+-----------+---------+------------------+---------------------
+  exact_goal                     | (2.1,  0.0,   0°) | YES   | OK    |       0ms |       1 | L3_fallback      | 
+  near_goal_micro_offset         | (2.1,  0.1,   1°) | YES   | OK    |       0ms |       0 | L1_pure_rs       | 
+  goal_boundary                  | (2.2, -0.1,  -3°) | YES   | OK    |       0ms |       1 | L3_fallback      | 
+  close_reverse_180              | (2.5,  0.0, 180°) | YES   | OK    |       0ms |       0 | L1_pure_rs       | 
+  Summary: 4/4 match expected, avg 0ms
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  Scenario: S09_dead_end_reverse
+  Note: Corridor x∈[5.0,8.2], y∈[-1.0,1.0], dead-end at x=8.2 — must reverse to escape
+  Obstacles: 3, Expected: PASS
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  Label                          | Pos                    | OK?   | Match | ms        | Exp     | Level            | Detail
+  -------------------------------+------------------------+-------+-------+-----------+---------+------------------+---------------------
+  deep_facing_dead_end           | (7.0,  0.0,   0°) | YES   | OK    |       0ms |       0 | L1_pure_rs       | 
+  deep_facing_opening            | (7.0,  0.0, 180°) | YES   | OK    |     800ms |       1 | L2_two_stage     | GOAL_MISS(4.58,-0.01,-6°)
+  mid_corridor_angled            | (6.0,  0.2,  29°) | YES   | OK    |       0ms |       0 | L1_pure_rs       | 
+  Summary: 3/3 match expected, avg 267ms
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  Scenario: S10_corridor_straight
+  Note: Parallel shelves forming corridor y∈[-1.0,1.0] — simple straight-through
+  Obstacles: 2, Expected: PASS
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  Label                          | Pos                    | OK?   | Match | ms        | Exp     | Level            | Detail
+  -------------------------------+------------------------+-------+-------+-----------+---------+------------------+---------------------
+  corridor_center                | (5.0,  0.0,   0°) | YES   | OK    |       0ms |       0 | L1_pure_rs       | 
+  corridor_upper                 | (5.0,  0.5, -11°) | YES   | OK    |       0ms |       0 | L1_pure_rs       | 
+  corridor_lower                 | (5.0, -0.5,  11°) | YES   | OK    |       0ms |       0 | L1_pure_rs       | 
+  Summary: 3/3 match expected, avg 0ms
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  Scenario: S11_l_barrier
+  Note: Vertical wall y∈[-3.5,1.0] + horizontal ceiling y=2.5 — must navigate through gap y∈[1.0,2.5]
+  Obstacles: 2, Expected: PASS
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  Label                          | Pos                    | OK?   | Match | ms        | Exp     | Level            | Detail
+  -------------------------------+------------------------+-------+-------+-----------+---------+------------------+---------------------
+  must_route_around_L            | (6.0,  0.0,   0°) | NO    | FAIL  |   30007ms |       0 |                  | TIMEOUT
+  far_lower_angled               | (7.0, -1.0,  45°) | NO    | FAIL  |   30011ms |       0 |                  | TIMEOUT
+  Summary: 0/2 match expected, avg 30009ms
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  Scenario: S12_goal_covered
+  Note: Obstacle covers goal (2.1, 0) — planner should fail instantly (<100ms)
+  Obstacles: 1, Expected: FAIL
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  Label                          | Pos                    | OK?   | Match | ms        | Exp     | Level            | Detail
+  -------------------------------+------------------------+-------+-------+-----------+---------+------------------+---------------------
+  goal_blocked                   | (5.0,  0.0,   0°) | NO    | OK    |       0ms |       0 | FAILED_goal_blocked | 
+  goal_blocked_angled            | (3.0,  1.0, -30°) | NO    | OK    |       0ms |       0 | FAILED_goal_blocked | 
+  Summary: 2/2 match expected, avg 0ms
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  Scenario: S13_force_fallback
+  Note: Simple obstacle but tested with very low _expand_limit to verify fallback kicks in
+  Obstacles: 1, Expected: PASS
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  Label                          | Pos                    | OK?   | Match | ms        | Exp     | Level            | Detail
+  -------------------------------+------------------------+-------+-------+-----------+---------+------------------+---------------------
+  simple_block_low_budget        | (5.5,  0.0,   0°) | NO    | FAIL  |   30017ms |       0 |                  | TIMEOUT
+  Summary: 0/1 match expected, avg 30017ms
+
+====================================================================================================
+  GLOBAL SUMMARY
+  Total cases: 41
+  Passed (match expected): 29
+  Failed (mismatch): 12
+  Match rate: 70.7%
+====================================================================================================
+
+Log saved to: logs/obs_v2_test_v1_20260224_022312.log

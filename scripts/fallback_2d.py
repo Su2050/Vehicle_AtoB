@@ -8,6 +8,7 @@ stitch the path with collision-free Reeds-Shepp segments.
 
 import math
 import heapq
+import time
 import rs
 from primitives import (
     DT, MIN_TURN_RADIUS, ALIGN_GOAL_DYAW,
@@ -242,7 +243,7 @@ def _try_rs_connect(x1, y1, th1, x2, y2, th2, collision_fn,
 
 
 def _try_connect_with_heading_variants(x1, y1, th1, x2, y2, th2_nom,
-                                        collision_fn, max_paths=10):
+                                        collision_fn, max_paths=10, deadline=None):
     """
     Try RS connections with many heading variants at the destination.
     Returns (trajectory, actual_th2) or (None, None).
@@ -253,6 +254,8 @@ def _try_connect_with_heading_variants(x1, y1, th1, x2, y2, th2_nom,
     best_traj = None
     best_th2 = th2_nom
     for off in offsets:
+        if deadline is not None and time.perf_counter() > deadline:
+            break
         th2 = th2_nom + off
         traj = _try_rs_connect(x1, y1, th1, x2, y2, th2, collision_fn,
                                max_paths=max_paths)
@@ -263,7 +266,7 @@ def _try_connect_with_heading_variants(x1, y1, th1, x2, y2, th2_nom,
     return best_traj, best_th2
 
 
-def _stitch_waypoints(waypoints, start_th, collision_fn, max_rs_paths):
+def _stitch_waypoints(waypoints, start_th, collision_fn, max_rs_paths, deadline=None):
     """
     Stitch waypoints with RS segments. Last segment targets exact goal pose.
     Returns (success, trajectory).
@@ -273,6 +276,8 @@ def _stitch_waypoints(waypoints, start_th, collision_fn, max_rs_paths):
     cur_th = start_th
 
     for i in range(len(waypoints) - 1):
+        if deadline is not None and time.perf_counter() > deadline:
+            return False, None
         wx1, wy1 = waypoints[i]
         wx2, wy2 = waypoints[i + 1]
         target_th = nominal_headings[i + 1]
@@ -296,7 +301,7 @@ def _stitch_waypoints(waypoints, start_th, collision_fn, max_rs_paths):
         else:
             seg, actual_th = _try_connect_with_heading_variants(
                 wx1, wy1, cur_th, wx2, wy2, target_th,
-                collision_fn, max_paths=max_rs_paths)
+                collision_fn, max_paths=max_rs_paths, deadline=deadline)
 
         if seg is None:
             return False, None
@@ -327,18 +332,24 @@ _HEADING_PULL_DIST = 1.5
 
 def plan_2d_fallback(dijkstra_grid, start_x, start_y, start_th,
                      collision_fn, spacing=1.5, max_rs_paths=12,
-                     obstacles=None):
+                     obstacles=None, deadline=None):
     """
     2D skeleton fallback planner with heading-aware candidate selection.
-
-    Generates multiple 2D candidate paths including heading-biased variants,
-    stitches all with RS segments, and returns the shortest feasible trajectory.
+    Optimized with aggressive deadline checks for speed.
     """
+    # Fast deadline check at start
+    if deadline is not None and time.perf_counter() > deadline:
+        return False, None
+
     raw_path = _trace_gradient_path(dijkstra_grid, start_x, start_y)
 
     candidates = []
     if len(raw_path) >= 2:
         candidates.append(raw_path)
+
+    # Early exit if no path found
+    if not candidates and not obstacles:
+        return False, None
 
     if obstacles:
         alt = _dijkstra_2d_path(
@@ -346,26 +357,35 @@ def plan_2d_fallback(dijkstra_grid, start_x, start_y, start_th,
         if len(alt) >= 2:
             candidates.append(alt)
 
-    for sign in (1.0, -1.0):
-        px = start_x - sign * _HEADING_PULL_DIST * math.cos(start_th)
-        py = start_y - sign * _HEADING_PULL_DIST * math.sin(start_th)
-        if px < 0.0 or px > 9.5 or py < -5.5 or py > 5.5:
-            continue
-        pull_path = _dijkstra_2d_path(
-            px, py, RS_GOAL_X, RS_GOAL_Y, obstacles)
-        if len(pull_path) >= 2:
-            candidates.append([(start_x, start_y)] + pull_path)
+    # Skip heading-biased variants if deadline is tight
+    if deadline is None or time.perf_counter() + 1.0 < deadline:
+        for sign in (1.0, -1.0):
+            if deadline is not None and time.perf_counter() > deadline:
+                break
+            px = start_x - sign * _HEADING_PULL_DIST * math.cos(start_th)
+            py = start_y - sign * _HEADING_PULL_DIST * math.sin(start_th)
+            if px < 0.0 or px > 9.5 or py < -5.5 or py > 5.5:
+                continue
+            pull_path = _dijkstra_2d_path(
+                px, py, RS_GOAL_X, RS_GOAL_Y, obstacles)
+            if len(pull_path) >= 2:
+                candidates.append([(start_x, start_y)] + pull_path)
 
-    spacings = [spacing, spacing * 1.5, spacing * 0.6, spacing * 2.0]
+    # Reduced spacings for speed
+    spacings = [spacing, spacing * 2.0]
     best_traj = None
     best_len = float('inf')
     for raw in candidates:
+        if deadline is not None and time.perf_counter() > deadline:
+            break
         for sp in spacings:
+            if deadline is not None and time.perf_counter() > deadline:
+                break
             wps = _simplify_path(raw, min_spacing=sp)
             if len(wps) < 2:
                 continue
             ok, traj = _stitch_waypoints(
-                wps, start_th, collision_fn, max_rs_paths)
+                wps, start_th, collision_fn, max_rs_paths, deadline=deadline)
             if ok:
                 tlen = _trajectory_length(traj)
                 if tlen < best_len:
@@ -375,32 +395,30 @@ def plan_2d_fallback(dijkstra_grid, start_x, start_y, start_th,
     if best_traj is not None:
         return True, best_traj
 
-    # Retry with reduced inflation — opens paths blocked by conservative 0.7m buffer
+    # Retry with reduced inflation only if we have time
     if obstacles:
+        if deadline is not None and time.perf_counter() > deadline - 1.0:
+            return False, None  # Skip retry if low on time
+
         candidates2 = []
         alt2 = _dijkstra_2d_path(
             start_x, start_y, RS_GOAL_X, RS_GOAL_Y, obstacles,
             inflate_radius=0.2)
         if len(alt2) >= 2:
             candidates2.append(alt2)
-        for sign in (1.0, -1.0):
-            px = start_x - sign * _HEADING_PULL_DIST * math.cos(start_th)
-            py = start_y - sign * _HEADING_PULL_DIST * math.sin(start_th)
-            if px < 0.0 or px > 9.5 or py < -5.5 or py > 5.5:
-                continue
-            pull2 = _dijkstra_2d_path(
-                px, py, RS_GOAL_X, RS_GOAL_Y, obstacles,
-                inflate_radius=0.2)
-            if len(pull2) >= 2:
-                candidates2.append([(start_x, start_y)] + pull2)
-        fine_spacings = [spacing, spacing * 0.6, spacing * 0.3]
+
+        fine_spacings = [spacing, spacing * 0.6]
         for raw in candidates2:
+            if deadline is not None and time.perf_counter() > deadline:
+                break
             for sp in fine_spacings:
+                if deadline is not None and time.perf_counter() > deadline:
+                    break
                 wps = _simplify_path(raw, min_spacing=sp)
                 if len(wps) < 2:
                     continue
                 ok, traj = _stitch_waypoints(
-                    wps, start_th, collision_fn, max_rs_paths)
+                    wps, start_th, collision_fn, max_rs_paths, deadline=deadline)
                 if ok:
                     tlen = _trajectory_length(traj)
                     if tlen < best_len:

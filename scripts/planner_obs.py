@@ -292,6 +292,14 @@ def plan_path_robust_obs(x0, y0, theta0, precomp_prim,
     fast_obstacles = _preprocess_obstacles(obstacles)
     coll_fn = _make_collision_fn(no_corridor, fast_obstacles)
 
+    # ── Goal reachability pre-check ──
+    goal_valid, _ = coll_fn(RS_GOAL_X, RS_GOAL_Y, RS_GOAL_TH)
+    if not goal_valid:
+        if stats is not None:
+            stats.update(expanded=0, elapsed_ms=0.0, two_stage=False,
+                         level='FAILED_goal_blocked')
+        return False, None, None
+
     if dijkstra_grid is None and use_rs and obstacles:
         dijkstra_grid = DijkstraGrid(RS_GOAL_X, RS_GOAL_Y)
         dijkstra_grid.build_map(obstacles, start_x=x0, start_y=y0)

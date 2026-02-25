@@ -1,0 +1,188 @@
+====================================================================================================
+  COMPREHENSIVE OBSTACLE PLANNING TEST REPORT
+  Time: 2026-02-24 19:43:29
+====================================================================================================
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  Scenario: S01_open_field
+  Note: No obstacles — Level-1 Pure RS should handle most
+  Obstacles: 0, Expected: PASS
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  Label                          | Pos                    | OK?   | Match | ms        | Exp     | Level            | Detail
+  -------------------------------+------------------------+-------+-------+-----------+---------+------------------+---------------------
+  near_goal_straight             | (2.5,  0.0,   0°) | YES   | OK    |       0ms |       0 | L1_pure_rs       | 
+  slight_offset                  | (4.0,  0.5,  17°) | YES   | OK    |       0ms |       0 | L1_pure_rs       | 
+  mid_dist_offset                | (5.0, -1.0, -29°) | YES   | OK    |       0ms |       0 | L1_pure_rs       | 
+  far_straight                   | (7.0,  0.0,   0°) | YES   | OK    |       0ms |       0 | L1_pure_rs       | 
+  Summary: 4/4 match expected, avg 0ms
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  Scenario: S02_single_block
+  Note: One block on direct line — must detour
+  Obstacles: 1, Expected: PASS
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  Label                          | Pos                    | OK?   | Match | ms        | Exp     | Level            | Detail
+  -------------------------------+------------------------+-------+-------+-----------+---------+------------------+---------------------
+  blocked_direct                 | (5.0,  0.0,   0°) | NO    | FAIL  |   29140ms |    3503 | FAILED_all_stages | 
+  offset_upper                   | (5.0,  1.5, -17°) | NO    | FAIL  |   27002ms |    5000 | FAILED_all_stages | 
+  offset_lower                   | (5.0, -1.5,  17°) | NO    | FAIL  |   26548ms |    5000 | FAILED_all_stages | 
+  facing_away                    | (6.0,  0.0, 180°) | YES   | OK    |     278ms |      43 | L3_fb_robust     | 
+  Summary: 1/4 match expected, avg 20742ms
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  Scenario: S03_long_wall
+  Note: Wall y∈[-3.5,1.5], gap at y>1.5 — includes 90° heading parallel to wall
+  Obstacles: 1, Expected: PASS
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  Label                          | Pos                    | OK?   | Match | ms        | Exp     | Level            | Detail
+  -------------------------------+------------------------+-------+-------+-----------+---------+------------------+---------------------
+  behind_wall_center             | (5.0,  0.0,   0°) | NO    | FAIL  |   28412ms |    3503 | FAILED_all_stages | 
+  behind_wall_lower              | (5.0, -2.0,   0°) | NO    | FAIL  |   25803ms |    3000 | FAILED_all_stages | 
+  near_gap_side                  | (7.0,  2.5,   0°) | NO    | FAIL  |   26960ms |   11000 | FAILED_all_stages | 
+  wall_parallel_heading          | (5.0, -2.5,  90°) | NO    | FAIL  |   26857ms |    3500 | FAILED_all_stages | 
+  Summary: 0/4 match expected, avg 27008ms
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  Scenario: S04_narrow_passage
+  Note: Gap y∈[-0.6,0.6]=1.2m, vehicle radius 0.1m — tight passage
+  Obstacles: 2, Expected: PASS
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  Label                          | Pos                    | OK?   | Match | ms        | Exp     | Level            | Detail
+  -------------------------------+------------------------+-------+-------+-----------+---------+------------------+---------------------
+  passage_center                 | (5.0,  0.0,   0°) | YES   | OK    |       0ms |       0 | L1_pure_rs       | 
+  passage_offset_upper           | (6.0,  0.3, -11°) | YES   | OK    |       0ms |       0 | L1_pure_rs       | 
+  passage_offset_lower           | (6.0, -0.3,  11°) | YES   | OK    |       0ms |       0 | L1_pure_rs       | 
+  Summary: 3/3 match expected, avg 0ms
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  Scenario: S05_u_trap
+  Note: U-trap x∈[5.0,8.0], y∈[-1.5,1.5], opening at x>8.0 — must escape +x then route to goal
+  Obstacles: 3, Expected: PASS
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  Label                          | Pos                    | OK?   | Match | ms        | Exp     | Level            | Detail
+  -------------------------------+------------------------+-------+-------+-----------+---------+------------------+---------------------
+  u_center_facing_wall           | (6.5,  0.0,   0°) | NO    | FAIL  |   29676ms |    3003 | FAILED_all_stages | 
+  u_center_facing_opening        | (7.0,  0.0, 180°) | NO    | FAIL  |   24844ms |    2500 | FAILED_all_stages | 
+  u_upper                        | (6.5,  1.0, -90°) | NO    | FAIL  |   29724ms |    3500 | FAILED_all_stages | 
+  Summary: 0/3 match expected, avg 28082ms
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  Scenario: S06_unreachable
+  Note: Full-height wall x∈[2.4,3.2] blocks all access to goal — must return failure
+  Obstacles: 1, Expected: FAIL
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  Label                          | Pos                    | OK?   | Match | ms        | Exp     | Level            | Detail
+  -------------------------------+------------------------+-------+-------+-----------+---------+------------------+---------------------
+  direct_approach                | (5.0,  0.0,   0°) | NO    | OK    |   28042ms |    3503 | FAILED_all_stages | 
+  angled_approach                | (5.0,  2.0, -29°) | NO    | OK    |   29031ms |    3500 | FAILED_all_stages | 
+  Summary: 2/2 match expected, avg 28536ms
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  Scenario: S07a_random_seed42
+  Note: Random (seed=42) with y=0 corridor width 1.8m — guaranteed passable
+  Obstacles: 2, Expected: PASS
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  Label                          | Pos                    | OK?   | Match | ms        | Exp     | Level            | Detail
+  -------------------------------+------------------------+-------+-------+-----------+---------+------------------+---------------------
+  corridor_center                | (6.0,  0.0,   0°) | YES   | OK    |       0ms |       0 | L1_pure_rs       | 
+  corridor_offset                | (7.0,  0.3, -11°) | YES   | OK    |       0ms |       0 | L1_pure_rs       | 
+  Summary: 2/2 match expected, avg 0ms
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  Scenario: S07b_random_seed123
+  Note: Random (seed=123) with y=0 corridor width 1.8m
+  Obstacles: 6, Expected: PASS
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  Label                          | Pos                    | OK?   | Match | ms        | Exp     | Level            | Detail
+  -------------------------------+------------------------+-------+-------+-----------+---------+------------------+---------------------
+  corridor_center                | (6.0,  0.0,   0°) | YES   | OK    |       0ms |       0 | L1_pure_rs       | 
+  corridor_offset                | (7.0, -0.3,  11°) | YES   | OK    |       0ms |       0 | L1_pure_rs       | 
+  Summary: 2/2 match expected, avg 0ms
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  Scenario: S07c_random_seed2026
+  Note: Random (seed=2026) with y=0 corridor width 1.8m
+  Obstacles: 3, Expected: PASS
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  Label                          | Pos                    | OK?   | Match | ms        | Exp     | Level            | Detail
+  -------------------------------+------------------------+-------+-------+-----------+---------+------------------+---------------------
+  corridor_center                | (6.0,  0.0,   0°) | YES   | OK    |       0ms |       0 | L1_pure_rs       | 
+  corridor_offset                | (5.5,  0.5, -17°) | YES   | OK    |       0ms |       0 | L1_pure_rs       | 
+  Summary: 2/2 match expected, avg 0ms
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  Scenario: S08_start_equals_goal
+  Note: Start inside/near goal region — includes extreme 180° reversal at close range
+  Obstacles: 0, Expected: PASS
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  Label                          | Pos                    | OK?   | Match | ms        | Exp     | Level            | Detail
+  -------------------------------+------------------------+-------+-------+-----------+---------+------------------+---------------------
+  exact_goal                     | (2.1,  0.0,   0°) | YES   | OK    |      14ms |       0 | L2_fast          | 
+  near_goal_micro_offset         | (2.1,  0.1,   1°) | YES   | OK    |       0ms |       0 | L1_pure_rs       | 
+  goal_boundary                  | (2.2, -0.1,  -3°) | YES   | OK    |      16ms |       1 | L2_fast          | 
+  close_reverse_180              | (2.5,  0.0, 180°) | YES   | OK    |     493ms |       4 | L3_fb_robust     | 
+  Summary: 4/4 match expected, avg 131ms
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  Scenario: S09_dead_end_reverse
+  Note: Corridor x∈[5.0,8.2], y∈[-1.0,1.0], dead-end at x=8.2 — must reverse to escape
+  Obstacles: 3, Expected: PASS
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  Label                          | Pos                    | OK?   | Match | ms        | Exp     | Level            | Detail
+  -------------------------------+------------------------+-------+-------+-----------+---------+------------------+---------------------
+  deep_facing_dead_end           | (7.0,  0.0,   0°) | YES   | OK    |       0ms |       0 | L1_pure_rs       | 
+  deep_facing_opening            | (7.0,  0.0, 180°) | YES   | OK    |    2590ms |     375 | L3_fb_robust     | 
+  mid_corridor_angled            | (6.0,  0.2,  29°) | YES   | OK    |       0ms |       0 | L1_pure_rs       | 
+  Summary: 3/3 match expected, avg 864ms
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  Scenario: S10_corridor_straight
+  Note: Parallel shelves forming corridor y∈[-1.0,1.0] — simple straight-through
+  Obstacles: 2, Expected: PASS
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  Label                          | Pos                    | OK?   | Match | ms        | Exp     | Level            | Detail
+  -------------------------------+------------------------+-------+-------+-----------+---------+------------------+---------------------
+  corridor_center                | (5.0,  0.0,   0°) | YES   | OK    |       0ms |       0 | L1_pure_rs       | 
+  corridor_upper                 | (5.0,  0.5, -11°) | YES   | OK    |       0ms |       0 | L1_pure_rs       | 
+  corridor_lower                 | (5.0, -0.5,  11°) | YES   | OK    |       0ms |       0 | L1_pure_rs       | 
+  Summary: 3/3 match expected, avg 0ms
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  Scenario: S11_l_barrier
+  Note: Vertical wall y∈[-3.5,1.0] + horizontal ceiling y=2.5 — must navigate through gap y∈[1.0,2.5]
+  Obstacles: 2, Expected: PASS
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  Label                          | Pos                    | OK?   | Match | ms        | Exp     | Level            | Detail
+  -------------------------------+------------------------+-------+-------+-----------+---------+------------------+---------------------
+  must_route_around_L            | (6.0,  0.0,   0°) | NO    | FAIL  |   26905ms |    3003 | FAILED_all_stages | 
+  far_lower_angled               | (7.0, -1.0,  45°) | YES   | OK    |    2355ms |       0 | L1_8_2d_skeleton_sp2.5 | 
+  Summary: 1/2 match expected, avg 14630ms
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  Scenario: S12_goal_covered
+  Note: Obstacle covers goal (2.1, 0) — planner should fail instantly (<100ms)
+  Obstacles: 1, Expected: FAIL
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  Label                          | Pos                    | OK?   | Match | ms        | Exp     | Level            | Detail
+  -------------------------------+------------------------+-------+-------+-----------+---------+------------------+---------------------
+  goal_blocked                   | (5.0,  0.0,   0°) | NO    | OK    |       0ms |       0 | FAILED_goal_blocked | 
+  goal_blocked_angled            | (3.0,  1.0, -30°) | NO    | OK    |       0ms |       0 | FAILED_goal_blocked | 
+  Summary: 2/2 match expected, avg 0ms
+
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  Scenario: S13_force_fallback
+  Note: Simple obstacle but tested with very low _expand_limit to verify fallback kicks in
+  Obstacles: 1, Expected: PASS
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  Label                          | Pos                    | OK?   | Match | ms        | Exp     | Level            | Detail
+  -------------------------------+------------------------+-------+-------+-----------+---------+------------------+---------------------
+  simple_block_low_budget        | (5.5,  0.0,   0°) | NO    | FAIL  |   24136ms |    3003 | FAILED_all_stages | low_budget=failed(exp=101)
+  Summary: 0/1 match expected, avg 24136ms
+
+====================================================================================================
+  GLOBAL SUMMARY
+  Total cases: 41
+  Passed (match expected): 29
+  Failed (mismatch): 12
+  Match rate: 70.7%
+====================================================================================================

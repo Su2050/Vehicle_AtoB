@@ -13,7 +13,8 @@ def plan_path(x0, y0, theta0, precomp_prim,
               _goal_ymin=-0.18, _goal_ymax=0.18, _goal_thmax=ALIGN_GOAL_DYAW,
               _step_limit=1079, _expand_limit=150000, _prim_limit=30,
               _rs_expand=True,
-              rs_expansion_radius=2.5):
+              rs_expansion_radius=2.5,
+              deadline=None):
     """
     纯 A* 搜索引擎。
 
@@ -75,8 +76,13 @@ def plan_path(x0, y0, theta0, precomp_prim,
 
         if expanded > _expand_limit:
             break
-        if expanded % 2000 == 0 and (time.perf_counter() - t_start) > 20.0:
-            break
+        # Check deadline more frequently (every 500 instead of 2000)
+        if expanded % 500 == 0:
+            now = time.perf_counter()
+            if deadline is not None and now > deadline:
+                break
+            if deadline is None and (now - t_start) > 20.0:
+                break
 
         cos_th = math.cos(cth)
         sin_th = math.sin(cth)
