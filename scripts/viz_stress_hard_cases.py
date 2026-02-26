@@ -291,17 +291,13 @@ def _draw_hard_case(ax, case_info, traj_data, show_title=True, compact=False):
             markeredgecolor="#006600", markeredgewidth=1.0, zorder=10,
             label="Start" if not compact else None)
 
-    # ── 叉车轮廓 ──
-    veh_l, veh_w = 1.8, 0.5
-    corners = np.array([
-        [-veh_l / 2, -veh_w / 2], [-veh_l / 2, veh_w / 2],
-        [veh_l / 2, veh_w / 2], [veh_l / 2, -veh_w / 2],
-        [-veh_l / 2, -veh_w / 2],
-    ])
-    R = np.array([[math.cos(sth), -math.sin(sth)],
-                  [math.sin(sth),  math.cos(sth)]])
-    cw = (R @ corners.T).T + np.array([sx, sy])
-    ax.plot(cw[:, 1], cw[:, 0], "-", color="#00aa00", lw=1.0, alpha=0.5)
+    # ── 碰撞半径圆 (与 collision.py VEHICLE_RADIUS=0.1 一致) ──
+    collision_circle = mpatches.Circle(
+        (sy, sx), 0.1,
+        linewidth=1.2, edgecolor="#00aa00", facecolor="#00cc0030",
+        zorder=9, label="Collision R=0.1m" if not compact else None,
+    )
+    ax.add_patch(collision_circle)
 
     # ── 范围 ──
     all_xs = [sx, RS_GOAL_X, WALL_X_MIN, WALL_X_MAX]
@@ -344,10 +340,10 @@ def _analyze_difficulty(case):
     euclidean = math.hypot(sx - RS_GOAL_X, sy - RS_GOAL_Y)
     lines.append(f"Euclidean: {euclidean:.2f}m")
 
-    # 朝向
+    # 朝向 (注意: 本系统中 th=0 表示车头朝 -x, 前进方向 = θ+π)
     heading_goal = math.degrees(math.atan2(RS_GOAL_Y - sy, RS_GOAL_X - sx))
-    th_deg = math.degrees(sth)
-    h_diff = abs(((th_deg - heading_goal + 180) % 360) - 180)
+    forward_deg = math.degrees(sth) + 180  # 前进方向 = θ + π
+    h_diff = abs(((forward_deg - heading_goal + 180) % 360) - 180)
     lines.append(f"Heading diff: {h_diff:.0f} deg")
     if h_diff > 120:
         lines.append("=> Facing away!")

@@ -72,7 +72,7 @@ def _draw_scene(ax, case, show_title=True, compact=False):
 
     # ── 起点 + 朝向箭头 ──
     arrow_len = 0.4 if not compact else 0.3
-    # 叉车前方 = -x 方向
+    # 叉车前方 = (-cos(θ), -sin(θ))，即 θ=0 时朝 -x (正对托盘)
     dx_arrow = -arrow_len * math.cos(sth)
     dy_arrow = -arrow_len * math.sin(sth)
     ax.annotate("", xy=(sy + dy_arrow, sx + dx_arrow), xytext=(sy, sx),
@@ -81,21 +81,13 @@ def _draw_scene(ax, case, show_title=True, compact=False):
             markeredgecolor="#006600", markeredgewidth=1.0, zorder=10,
             label=f"Start" if not compact else None)
 
-    # ── 叉车粗略轮廓 (参考用, 简化为矩形) ──
-    # 叉车大致尺寸: 长~2.0m, 宽~0.6m, 中心在起点
-    veh_l, veh_w = 1.8, 0.5
-    corners_local = np.array([
-        [-veh_l / 2, -veh_w / 2],
-        [-veh_l / 2,  veh_w / 2],
-        [ veh_l / 2,  veh_w / 2],
-        [ veh_l / 2, -veh_w / 2],
-        [-veh_l / 2, -veh_w / 2],
-    ])
-    cos_th, sin_th = math.cos(sth), math.sin(sth)
-    R = np.array([[cos_th, -sin_th], [sin_th, cos_th]])
-    corners_world = (R @ corners_local.T).T + np.array([sx, sy])
-    ax.plot(corners_world[:, 1], corners_world[:, 0], "-", color="#00aa00",
-            linewidth=1.0, alpha=0.5)
+    # ── 碰撞半径圆 (与 collision.py VEHICLE_RADIUS=0.1 一致) ──
+    collision_circle = mpatches.Circle(
+        (sy, sx), 0.1,
+        linewidth=1.2, edgecolor="#00aa00", facecolor="#00cc0030",
+        zorder=9, label="Collision R=0.1m" if not compact else None,
+    )
+    ax.add_patch(collision_circle)
 
     # ── 从起点到目标的直线 (辅助线) ──
     ax.plot([sy, RS_GOAL_Y], [sx, RS_GOAL_X], "--", color="#aaaaaa",
@@ -255,10 +247,10 @@ def _analyze_blocking(sx, sy, sth, obstacles):
     if critical_obs:
         lines.append(f"Critical zone (x 2.5~5): obs {critical_obs}")
 
-    # 起始朝向分析
-    th_deg = math.degrees(sth)
+    # 起始朝向分析 (注意: 本系统中 th=0 表示车头朝 -x, 前进方向 = θ+π)
+    forward_deg = math.degrees(sth) + 180
     heading_to_goal = math.degrees(math.atan2(gy - sy, gx - sx))
-    heading_diff = abs(((th_deg - heading_to_goal + 180) % 360) - 180)
+    heading_diff = abs(((forward_deg - heading_to_goal + 180) % 360) - 180)
     lines.append(f"Heading to goal: {heading_to_goal:.0f} deg")
     lines.append(f"Heading diff: {heading_diff:.0f} deg")
     if heading_diff > 90:
