@@ -1,0 +1,551 @@
+[
+  {
+    "id": 85,
+    "type": "RandomMulti",
+    "x": 3.86,
+    "y": -1.92,
+    "th": -3.053,
+    "obstacles": [
+      {
+        "x": 3.85,
+        "y": -1.49,
+        "w": 0.51,
+        "h": 0.63
+      },
+      {
+        "x": 3.1,
+        "y": 0.22,
+        "w": 1.6,
+        "h": 0.61
+      },
+      {
+        "x": 3.58,
+        "y": -0.09,
+        "w": 1.53,
+        "h": 1.96
+      },
+      {
+        "x": 5.12,
+        "y": -1.3,
+        "w": 0.47,
+        "h": 0.63
+      }
+    ],
+    "elapsed_ms": 11222.6,
+    "gear_shifts": 8,
+    "path_length": 13.36,
+    "difficulty_score": 74.3,
+    "level": "L1_8_2d_skeleton_sp2.5",
+    "expanded": 0
+  },
+  {
+    "id": 114,
+    "type": "RandomMulti",
+    "x": 2.97,
+    "y": 2.23,
+    "th": 0.752,
+    "obstacles": [
+      {
+        "x": 3.97,
+        "y": -0.75,
+        "w": 0.55,
+        "h": 1.2
+      }
+    ],
+    "elapsed_ms": 11456.1,
+    "gear_shifts": 7,
+    "path_length": 10.57,
+    "difficulty_score": 68.4,
+    "level": "L1_8_2d_skeleton_sp2.5",
+    "expanded": 0
+  },
+  {
+    "id": 215,
+    "type": "RandomMulti",
+    "x": 3.14,
+    "y": -2.2,
+    "th": -1.48,
+    "obstacles": [
+      {
+        "x": 7.48,
+        "y": -0.2,
+        "w": 1.79,
+        "h": 1.15
+      },
+      {
+        "x": 2.95,
+        "y": -0.64,
+        "w": 1.08,
+        "h": 0.71
+      },
+      {
+        "x": 5.42,
+        "y": -2.71,
+        "w": 0.78,
+        "h": 1.32
+      },
+      {
+        "x": 6.71,
+        "y": 1.04,
+        "w": 0.79,
+        "h": 0.31
+      }
+    ],
+    "elapsed_ms": 11382.1,
+    "gear_shifts": 0,
+    "path_length": 12.03,
+    "difficulty_score": 68.4,
+    "level": "L1_8_2d_skeleton_sp2.5",
+    "expanded": 0
+  },
+  {
+    "id": 217,
+    "type": "RandomMulti",
+    "x": 2.81,
+    "y": 0.37,
+    "th": -0.864,
+    "obstacles": [
+      {
+        "x": 7.48,
+        "y": -0.2,
+        "w": 1.79,
+        "h": 1.15
+      },
+      {
+        "x": 2.95,
+        "y": -0.64,
+        "w": 1.08,
+        "h": 0.71
+      },
+      {
+        "x": 5.42,
+        "y": -2.71,
+        "w": 0.78,
+        "h": 1.32
+      },
+      {
+        "x": 6.71,
+        "y": 1.04,
+        "w": 0.79,
+        "h": 0.31
+      }
+    ],
+    "elapsed_ms": 11127.4,
+    "gear_shifts": 0,
+    "path_length": 11.31,
+    "difficulty_score": 63.3,
+    "level": "L1_8_2d_skeleton_sp2.5",
+    "expanded": 0
+  },
+  {
+    "id": 65,
+    "type": "RandomMulti",
+    "x": 5.02,
+    "y": 2.43,
+    "th": 0.528,
+    "obstacles": [
+      {
+        "x": 5.63,
+        "y": -1.35,
+        "w": 0.43,
+        "h": 0.79
+      },
+      {
+        "x": 3.86,
+        "y": -1.08,
+        "w": 1.22,
+        "h": 0.54
+      },
+      {
+        "x": 3.66,
+        "y": 1.16,
+        "w": 1.5,
+        "h": 0.41
+      },
+      {
+        "x": 4.54,
+        "y": 0.26,
+        "w": 1.01,
+        "h": 0.65
+      }
+    ],
+    "elapsed_ms": 11727.1,
+    "gear_shifts": 0,
+    "path_length": 8.2,
+    "difficulty_score": 61.7,
+    "level": "L1_8_2d_skeleton_sp2.5",
+    "expanded": 0
+  },
+  {
+    "id": 67,
+    "type": "RandomMulti",
+    "x": 4.78,
+    "y": -2.96,
+    "th": -0.931,
+    "obstacles": [
+      {
+        "x": 5.63,
+        "y": -1.35,
+        "w": 0.43,
+        "h": 0.79
+      },
+      {
+        "x": 3.86,
+        "y": -1.08,
+        "w": 1.22,
+        "h": 0.54
+      },
+      {
+        "x": 3.66,
+        "y": 1.16,
+        "w": 1.5,
+        "h": 0.41
+      },
+      {
+        "x": 4.54,
+        "y": 0.26,
+        "w": 1.01,
+        "h": 0.65
+      }
+    ],
+    "elapsed_ms": 11387.9,
+    "gear_shifts": 0,
+    "path_length": 6.4,
+    "difficulty_score": 59.7,
+    "level": "L1_8_2d_skeleton_sp2.5",
+    "expanded": 0
+  },
+  {
+    "id": 260,
+    "type": "RandomMulti",
+    "x": 7.78,
+    "y": 2.47,
+    "th": 0.792,
+    "obstacles": [
+      {
+        "x": 3.67,
+        "y": -1.7,
+        "w": 1.77,
+        "h": 0.4
+      },
+      {
+        "x": 5.02,
+        "y": -1.26,
+        "w": 1.69,
+        "h": 1.54
+      },
+      {
+        "x": 4.09,
+        "y": 0.59,
+        "w": 1.44,
+        "h": 0.85
+      },
+      {
+        "x": 4.01,
+        "y": -2.14,
+        "w": 1.42,
+        "h": 0.68
+      }
+    ],
+    "elapsed_ms": 11655.0,
+    "gear_shifts": 0,
+    "path_length": 10.72,
+    "difficulty_score": 59.3,
+    "level": "L1_8_2d_skeleton_sp2.5",
+    "expanded": 0
+  },
+  {
+    "id": 143,
+    "type": "RandomMulti",
+    "x": 4.37,
+    "y": -2.38,
+    "th": 0.047,
+    "obstacles": [
+      {
+        "x": 4.06,
+        "y": -1.47,
+        "w": 1.92,
+        "h": 1.47
+      },
+      {
+        "x": 4.87,
+        "y": -2.45,
+        "w": 0.45,
+        "h": 1.03
+      },
+      {
+        "x": 6.22,
+        "y": -0.76,
+        "w": 0.52,
+        "h": 0.4
+      },
+      {
+        "x": 7.28,
+        "y": 0.37,
+        "w": 1.44,
+        "h": 1.0
+      }
+    ],
+    "elapsed_ms": 11370.5,
+    "gear_shifts": 0,
+    "path_length": 8.69,
+    "difficulty_score": 59.1,
+    "level": "L1_8_2d_skeleton_sp2.5",
+    "expanded": 0
+  },
+  {
+    "id": 4,
+    "type": "RandomMulti",
+    "x": 5.72,
+    "y": 2.84,
+    "th": -0.763,
+    "obstacles": [
+      {
+        "x": 3.6,
+        "y": 0.54,
+        "w": 1.68,
+        "h": 0.31
+      },
+      {
+        "x": 6.53,
+        "y": 1.19,
+        "w": 0.88,
+        "h": 0.56
+      },
+      {
+        "x": 7.29,
+        "y": -0.98,
+        "w": 0.46,
+        "h": 0.46
+      },
+      {
+        "x": 6.74,
+        "y": 0.62,
+        "w": 1.67,
+        "h": 1.54
+      }
+    ],
+    "elapsed_ms": 11397.9,
+    "gear_shifts": 0,
+    "path_length": 14.41,
+    "difficulty_score": 57.9,
+    "level": "L1_8_2d_skeleton_sp2.5",
+    "expanded": 0
+  },
+  {
+    "id": 197,
+    "type": "RandomMulti",
+    "x": 7.25,
+    "y": -1.58,
+    "th": -0.038,
+    "obstacles": [
+      {
+        "x": 5.84,
+        "y": 1.26,
+        "w": 1.23,
+        "h": 0.79
+      },
+      {
+        "x": 4.0,
+        "y": -2.05,
+        "w": 1.51,
+        "h": 1.49
+      },
+      {
+        "x": 3.37,
+        "y": -0.83,
+        "w": 0.68,
+        "h": 1.97
+      }
+    ],
+    "elapsed_ms": 11281.7,
+    "gear_shifts": 0,
+    "path_length": 13.2,
+    "difficulty_score": 57.4,
+    "level": "L1_8_2d_skeleton_sp2.5",
+    "expanded": 0
+  },
+  {
+    "id": 267,
+    "type": "RandomMulti",
+    "x": 4.42,
+    "y": -1.78,
+    "th": -1.175,
+    "obstacles": [
+      {
+        "x": 7.07,
+        "y": 1.17,
+        "w": 1.5,
+        "h": 0.97
+      },
+      {
+        "x": 3.7,
+        "y": -1.07,
+        "w": 0.78,
+        "h": 1.09
+      },
+      {
+        "x": 5.74,
+        "y": -1.15,
+        "w": 0.91,
+        "h": 1.8
+      },
+      {
+        "x": 4.83,
+        "y": 1.82,
+        "w": 1.53,
+        "h": 1.59
+      }
+    ],
+    "elapsed_ms": 10370.3,
+    "gear_shifts": 0,
+    "path_length": 5.93,
+    "difficulty_score": 56.6,
+    "level": "L1_8_2d_skeleton_sp2.5",
+    "expanded": 0
+  },
+  {
+    "id": 290,
+    "type": "Passage(gap=1.0)",
+    "x": 6.21,
+    "y": -2.48,
+    "th": -0.434,
+    "obstacles": [
+      {
+        "x": 4.61,
+        "y": 1.81,
+        "w": 0.83,
+        "h": 4.0
+      },
+      {
+        "x": 4.61,
+        "y": -3.15,
+        "w": 0.83,
+        "h": 4.0
+      }
+    ],
+    "elapsed_ms": 11656.0,
+    "gear_shifts": 0,
+    "path_length": 12.52,
+    "difficulty_score": 55.7,
+    "level": "L1_8_2d_skeleton_sp2.5",
+    "expanded": 0
+  },
+  {
+    "id": 178,
+    "type": "RandomMulti",
+    "x": 8.08,
+    "y": 2.04,
+    "th": 0.942,
+    "obstacles": [
+      {
+        "x": 6.87,
+        "y": 0.33,
+        "w": 0.47,
+        "h": 1.74
+      },
+      {
+        "x": 6.76,
+        "y": -1.29,
+        "w": 1.6,
+        "h": 0.76
+      },
+      {
+        "x": 7.03,
+        "y": -2.12,
+        "w": 1.04,
+        "h": 1.91
+      },
+      {
+        "x": 3.61,
+        "y": -0.29,
+        "w": 0.89,
+        "h": 0.35
+      }
+    ],
+    "elapsed_ms": 10900.8,
+    "gear_shifts": 0,
+    "path_length": 8.75,
+    "difficulty_score": 55.5,
+    "level": "L1_8_2d_skeleton_sp2.5",
+    "expanded": 0
+  },
+  {
+    "id": 73,
+    "type": "RandomMulti",
+    "x": 3.19,
+    "y": 2.69,
+    "th": -0.22,
+    "obstacles": [
+      {
+        "x": 4.14,
+        "y": -0.27,
+        "w": 0.87,
+        "h": 1.8
+      },
+      {
+        "x": 3.89,
+        "y": 2.71,
+        "w": 1.02,
+        "h": 1.72
+      },
+      {
+        "x": 4.85,
+        "y": 1.49,
+        "w": 0.39,
+        "h": 1.92
+      },
+      {
+        "x": 3.62,
+        "y": -2.59,
+        "w": 1.93,
+        "h": 0.37
+      }
+    ],
+    "elapsed_ms": 10689.8,
+    "gear_shifts": 0,
+    "path_length": 7.9,
+    "difficulty_score": 55.2,
+    "level": "L1_8_2d_skeleton_sp2.5",
+    "expanded": 0
+  },
+  {
+    "id": 268,
+    "type": "RandomMulti",
+    "x": 2.77,
+    "y": 2.18,
+    "th": 1.516,
+    "obstacles": [
+      {
+        "x": 7.07,
+        "y": 1.17,
+        "w": 1.5,
+        "h": 0.97
+      },
+      {
+        "x": 3.7,
+        "y": -1.07,
+        "w": 0.78,
+        "h": 1.09
+      },
+      {
+        "x": 5.74,
+        "y": -1.15,
+        "w": 0.91,
+        "h": 1.8
+      },
+      {
+        "x": 4.83,
+        "y": 1.82,
+        "w": 1.53,
+        "h": 1.59
+      }
+    ],
+    "elapsed_ms": 2347.7,
+    "gear_shifts": 5,
+    "path_length": 7.97,
+    "difficulty_score": 53.9,
+    "level": "L1_8_2d_skeleton_sp2.5",
+    "expanded": 0
+  }
+]
