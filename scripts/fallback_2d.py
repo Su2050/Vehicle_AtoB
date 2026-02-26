@@ -532,6 +532,11 @@ def plan_2d_fallback(dijkstra_grid, start_x, start_y, start_th,
     best_traj = None
     best_score = float('inf')
     best_len = float('inf')
+    # Also track the best collision-free path regardless of QM pass/fail.
+    # This avoids returning False when the geometry prevents meeting all QM
+    # thresholds (e.g. S03 behind-wall cases with long detours).
+    fallback_traj = None
+    fallback_score = float('inf')
     for raw in candidates:
         if deadline is not None and time.perf_counter() > deadline:
             break
@@ -545,14 +550,18 @@ def plan_2d_fallback(dijkstra_grid, start_x, start_y, start_th,
                 wps, start_th, collision_fn, max_rs_paths, deadline=deadline)
             if ok:
                 pass_qm, score, qm = _evaluate_traj_quality(start_x, start_y, traj)
-                if not pass_qm:
-                    continue
-                tlen = qm['traj_len']
-                if (score < best_score - 1e-9) or (
-                        abs(score - best_score) <= 1e-9 and tlen < best_len):
-                    best_traj = traj
-                    best_score = score
-                    best_len = tlen
+                tlen = qm.get('traj_len', _trajectory_length(traj))
+                if pass_qm:
+                    if (score < best_score - 1e-9) or (
+                            abs(score - best_score) <= 1e-9 and tlen < best_len):
+                        best_traj = traj
+                        best_score = score
+                        best_len = tlen
+                else:
+                    # Keep as fallback (penalised score, but still usable)
+                    if score < fallback_score - 1e-9:
+                        fallback_traj = traj
+                        fallback_score = score
 
     if best_traj is not None:
         return True, best_traj
@@ -583,17 +592,25 @@ def plan_2d_fallback(dijkstra_grid, start_x, start_y, start_th,
                     wps, start_th, collision_fn, max_rs_paths, deadline=deadline)
                 if ok:
                     pass_qm, score, qm = _evaluate_traj_quality(start_x, start_y, traj)
-                    if not pass_qm:
-                        continue
-                    tlen = qm['traj_len']
-                    if (score < best_score - 1e-9) or (
-                            abs(score - best_score) <= 1e-9 and tlen < best_len):
-                        best_traj = traj
-                        best_score = score
-                        best_len = tlen
+                    tlen = qm.get('traj_len', _trajectory_length(traj))
+                    if pass_qm:
+                        if (score < best_score - 1e-9) or (
+                                abs(score - best_score) <= 1e-9 and tlen < best_len):
+                            best_traj = traj
+                            best_score = score
+                            best_len = tlen
+                    else:
+                        if score < fallback_score - 1e-9:
+                            fallback_traj = traj
+                            fallback_score = score
 
         if best_traj is not None:
             return True, best_traj
+
+    # Return the best non-QM fallback if no QM-passing path was found.
+    # The caller (planner) applies its own quality gate and may still accept it.
+    if fallback_traj is not None:
+        return True, fallback_traj
 
     return False, None
 

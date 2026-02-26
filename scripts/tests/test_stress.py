@@ -180,9 +180,12 @@ def run_case_worker(case):
         signal.signal(signal.SIGALRM, _timeout_handler)
         signal.alarm(timeout_s)
         # 调用规划器 v2
+        # Pass _time_budget=18.0 so the planner knows the real constraint
+        # (SIGALRM fires at 20s; 2s margin for cleanup)
         ok, acts, rs_traj = plan_path_robust_obs_v2(
             x, y, th, g_prims,
-            use_rs=True, stats=stats, obstacles=obstacles
+            use_rs=True, stats=stats, obstacles=obstacles,
+            _time_budget=18.0
         )
     except TimeoutError:
         timed_out = True

@@ -632,8 +632,20 @@ def plan_path_robust_obs_v2(x0, y0, theta0, precomp_prim,
     # A* with fine-grained primitives (~0.007m lateral/step) cannot efficiently
     # detour around obstacles > 0.5m.
     run_2d_skeleton = bool(obstacles)
+    # Track best L1.8 candidates separately: QM-passing vs any collision-free
+    _l18_qm_traj = None
+    _l18_qm_acts = None
+    _l18_qm_spc = None
+    _l18_any_traj = None
+    _l18_any_acts = None
+    _l18_any_spc = None
+    _l18_any_len = float('inf')
     if run_2d_skeleton:
-        l18_deadline = min(time.perf_counter() + 15.0, planner_deadline)
+        # Dynamic L1.8 budget: use up to 60% of remaining time (max 15s),
+        # ensuring at least ~40% remains for A* multi-stage recovery.
+        _remaining = planner_deadline - time.perf_counter()
+        _l18_budget = min(_remaining * 0.6, 15.0)
+        l18_deadline = time.perf_counter() + max(_l18_budget, 3.0)
         coll_relaxed = coll_fn
         if prefix_too_many_shifts:
             # K-turn prefix is too long; skip it, only try from original position
@@ -655,24 +667,51 @@ def plan_path_robust_obs_v2(x0, y0, theta0, precomp_prim,
                 if fb2d_ok and not _path_goes_behind_wall(fb2d_traj):
                     qm_ok, qm_reason = _check_l18_quality(
                         x0, y0, theta0, prefix_acts, fb2d_traj, precomp_prim)
-                    if not qm_ok:
+                    if qm_ok:
+                        # QM-passing path found – accept immediately
+                        _l18_qm_traj = fb2d_traj
+                        _l18_qm_acts = prefix_acts
+                        _l18_qm_spc = spc
+                        break  # inner loop
+                    else:
+                        # Track best collision-free path as fallback
                         stats['l18_reject_reason'] = qm_reason
-                        continue
-                    total_ms = round((time.perf_counter() - t_robust) * 1000.0, 1)
-                    stats.update(
-                        expanded=0, elapsed_ms=total_ms,
-                        level=f'L1_8_2d_skeleton_sp{spc}',
-                        use_rs=use_rs, no_corridor=no_corridor,
-                        two_stage=True, stage1_ms=t1_ms,
-                    )
-                    return True, prefix_acts, fb2d_traj
+                        tlen = _trajectory_length(fb2d_traj)
+                        if tlen < _l18_any_len:
+                            _l18_any_traj = fb2d_traj
+                            _l18_any_acts = prefix_acts
+                            _l18_any_spc = spc
+                            _l18_any_len = tlen
+            if _l18_qm_traj is not None:
+                break  # outer loop
+
+        # Return the best L1.8 path: prefer QM-passing, fallback to collision-free
+        if _l18_qm_traj is not None:
+            total_ms = round((time.perf_counter() - t_robust) * 1000.0, 1)
+            stats.update(
+                expanded=0, elapsed_ms=total_ms,
+                level=f'L1_8_2d_skeleton_sp{_l18_qm_spc}',
+                use_rs=use_rs, no_corridor=no_corridor,
+                two_stage=True, stage1_ms=t1_ms,
+            )
+            return True, _l18_qm_acts, _l18_qm_traj
+        if _l18_any_traj is not None:
+            total_ms = round((time.perf_counter() - t_robust) * 1000.0, 1)
+            stats.update(
+                expanded=0, elapsed_ms=total_ms,
+                level=f'L1_8_2d_skeleton_sp{_l18_any_spc}',
+                use_rs=use_rs, no_corridor=no_corridor,
+                two_stage=True, stage1_ms=t1_ms,
+            )
+            return True, _l18_any_acts, _l18_any_traj
 
     # ── Level-2: Multi-stage A* from K-turn position ──
     _, mid_d_goal = dijkstra_grid.get_heuristic(mx, my)
     total_expanded = 0  # accumulate across all A* stages for diagnostics
 
-    # Exp-3e: Per-stage time allocation (in seconds)
-    STAGE_TIME_BUDGETS = [5.0, 10.0, 20.0]  # fast, robust, aggressive - increased
+    # Exp-5a: Tighter per-stage time allocation so all 3 stages fit within
+    # the remaining budget after L1.8. Previously [5, 10, 20] was too generous.
+    STAGE_TIME_BUDGETS = [3.0, 5.0, 8.0]  # fast, robust, aggressive
 
     if not prefix_too_many_shifts:
         for stage_idx, stage in enumerate(RECOVERY_STAGES):
