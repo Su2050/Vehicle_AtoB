@@ -1,0 +1,172 @@
+
+========================================================================
+ 板块 1  rs_sample_path 终点精度  [AC-1 / AC-2]
+========================================================================
+  标签               pos_err(m) ang_err(°)  结果
+  --------------------------------------------------
+  正前方直线                0.0000       0.00  PASS
+  侧偏+偏角                0.0000       0.00  PASS
+  负侧偏+偏角               0.0000       0.00  PASS
+  远角                   0.0000       0.00  PASS
+  近距小偏                 0.0000       0.00  PASS
+  中等侧偏偏航               0.0000       0.00  PASS
+  负侧偏正偏航               0.0000       0.00  PASS
+  最远起点                 0.0000       0.00  PASS
+
+  AC-1 位置误差 ≤0.05m : [32mPASS[0m (8/8)
+  AC-2 角度误差 ≤3°  : [32mPASS[0m (8/8)
+
+========================================================================
+ 板块 2  plan_path 标准集成测试  [AC-3 / AC-4 / AC-5]
+========================================================================
+  标签                       ok    exp      ms  终点达标  碰撞
+  --------------------------------------------------------------
+  Geo+Corr   默认            OK      2     0.4  OK       OK 
+  RS +Corr   默认            OK      0     0.1  OK [RS]  OK 
+  Geo+NoCorr 默认            OK      2     0.3  OK       OK 
+  RS +NoCorr 默认            OK      0     0.1  OK [RS]  OK 
+  Geo+NoCorr 轻侧偏+          OK     23     4.9  OK       OK 
+  RS +NoCorr 轻侧偏+          OK      1     1.1  OK [RS]  OK 
+  Geo+NoCorr 轻侧偏-          OK     22     4.7  OK       OK 
+  RS +NoCorr 轻侧偏-          OK      1     1.1  OK [RS]  OK 
+
+  AC-3 终点满足目标区        : [32mPASS[0m (0 失败)
+  AC-4 规划成功率 ≥8/8  : [32mPASS[0m (8/8)
+  AC-5 平均规划时间 ≤500ms : [32mPASS[0m (1.6ms)
+  AC-8 路径无碰撞(本板块)   : [32mPASS[0m (0 失败)
+
+========================================================================
+ 板块 3  plan_path_robust 全场景  [AC-4/6/7/8/9]
+========================================================================
+  [3-a] 标准场景（|y|≤0.5m, |θ|≤40°）
+    标签                       模式   ok      ms  目标  碰撞
+    --------------------------------------------------------
+    Geo+Corr  默认        Direct    OK     0.3  OK   OK 
+    RS+Corr   默认        Direct    OK     0.1  OK   OK 
+    Geo+NoC   默认        Direct    OK     0.3  OK   OK 
+    RS+NoC    默认        Direct    OK     0.1  OK   OK 
+    Geo+NoC   侧偏+       2-Stage   OK    25.9  OK   OK 
+    RS+NoC    侧偏+       Direct    OK     0.3  OK   OK 
+    Geo+NoC   侧偏-       2-Stage   OK    28.2  OK   OK 
+    RS+NoC    侧偏-       Direct    OK     0.3  OK   OK 
+
+  [3-b] 大偏航角两阶段（|θ|>TWO_STAGE_TH_THRESH）
+    标签                       模式   ok      ms  目标  碰撞  s1_acts s2_acts
+    ----------------------------------------------------------------------
+    θ=+43° NoCorr       2-Stage   OK   207.4  OK   OK   s1= 15  s2= 11
+    θ=-43° NoCorr       2-Stage   OK   208.0  OK   OK   s1= 15  s2= 11
+    θ=+43° Corr         2-Stage   OK   178.6  OK   OK   s1= 15  s2= 11
+    θ=+41° y=0.2m       2-Stage   OK     2.4  FAIL  OK   s1= 14  s2=  1
+
+  [3-b2] 中等 y 偏差两阶段（0.5m<|y|≤5.0m，avg≤8000ms 且 max≤12000ms）
+    标签                       模式   ok      ms  目标  碰撞  s1_acts s2_acts
+    ------------------------------------------------------------------------
+    y=+0.55m            2-Stage   OK   347.9  OK   OK   s1= 35  s2= 17
+    y=+0.65m            2-Stage   OK   329.6  OK   OK   s1= 47  s2= 18
+    y=+0.75m            2-Stage   OK   756.7  OK   OK   s1=191  s2= 22
+    y=-0.55m            2-Stage   OK   428.7  OK   OK   s1= 35  s2= 15
+    y=-0.65m            2-Stage   OK   373.3  OK   OK   s1= 47  s2= 19
+    y=-0.75m            2-Stage   OK   799.4  OK   OK   s1=191  s2= 21
+    y=+0.6m θ=29°       2-Stage   OK    77.0  OK   OK   s1=  2  s2= 10
+    y=-0.6m θ=-29°      2-Stage   OK    83.7  OK   OK   s1=  2  s2= 10
+
+  [3-c] 超限场景（|y|>5.0m，期望立即返回 IMPOSSIBLE）
+    标签                      ok=False      ms  立即?
+    --------------------------------------------------
+    y=+5.1m > 5.0m              True     0.0  YES(0.0ms)  PASS
+    y=-5.1m > 5.0m              True     0.0  YES(0.0ms)  PASS
+    y=+6.0m                     True     0.0  YES(0.0ms)  PASS
+
+  [3-d] 边界测试（AC-9）: limit=5.00m
+    标签                               期望       实际      ms  结果
+    ----------------------------------------------------------
+[A*] expanded=5000, f=56.7, cx=1.00, cy=3.24, elapsed=1037ms
+[A*] expanded=10000, f=58.9, cx=1.62, cy=0.88, elapsed=2091ms
+[A*] expanded=15000, f=59.7, cx=1.02, cy=4.05, elapsed=3181ms
+[A*] expanded=20000, f=60.6, cx=1.07, cy=4.22, elapsed=4292ms
+[A*] expanded=25000, f=58.5, cx=2.34, cy=1.57, elapsed=5429ms
+[A*] expanded=30000, f=61.6, cx=2.08, cy=2.05, elapsed=6555ms
+[A*] expanded=35000, f=60.5, cx=2.13, cy=2.10, elapsed=7700ms
+[A*] expanded=40000, f=64.8, cx=1.08, cy=1.25, elapsed=8790ms
+[A*] expanded=5000, f=192.4, cx=4.49, cy=4.71, elapsed=1077ms
+[A*] expanded=10000, f=191.9, cx=6.44, cy=4.26, elapsed=2200ms
+[A*] expanded=15000, f=191.5, cx=6.69, cy=4.16, elapsed=3320ms
+[A*] expanded=20000, f=193.1, cx=7.37, cy=4.09, elapsed=4465ms
+[A*] expanded=25000, f=193.9, cx=4.96, cy=4.65, elapsed=5607ms
+[A*] expanded=30000, f=192.0, cx=5.45, cy=4.44, elapsed=6770ms
+[A*] expanded=35000, f=190.7, cx=6.56, cy=4.21, elapsed=7907ms
+[A*] expanded=40000, f=191.3, cx=5.98, cy=4.29, elapsed=9070ms
+[A*] expanded=45000, f=191.7, cx=6.01, cy=4.35, elapsed=10218ms
+[A*] expanded=50000, f=193.8, cx=6.00, cy=4.22, elapsed=11401ms
+[A*] expanded=55000, f=193.9, cx=5.87, cy=4.25, elapsed=12549ms
+[A*] expanded=60000, f=190.4, cx=5.99, cy=4.31, elapsed=13738ms
+[A*] expanded=65000, f=186.0, cx=6.30, cy=4.07, elapsed=14887ms
+[A*] expanded=70000, f=192.9, cx=5.89, cy=4.15, elapsed=16025ms
+[A*] expanded=75000, f=192.7, cx=5.85, cy=4.15, elapsed=17159ms
+[A*] expanded=80000, f=193.6, cx=5.75, cy=4.25, elapsed=18347ms
+[A*] expanded=85000, f=186.9, cx=6.05, cy=4.09, elapsed=19477ms
+    y=4.99m (刚好在内)                  可规划       失败 28898.8  FAIL
+[A*] expanded=5000, f=56.8, cx=1.00, cy=-3.07, elapsed=985ms
+[A*] expanded=10000, f=58.8, cx=1.32, cy=-1.03, elapsed=2031ms
+[A*] expanded=15000, f=59.5, cx=1.56, cy=-1.33, elapsed=3153ms
+[A*] expanded=20000, f=60.3, cx=1.25, cy=-2.03, elapsed=4288ms
+[A*] expanded=25000, f=60.0, cx=2.11, cy=-1.33, elapsed=5444ms
+[A*] expanded=30000, f=56.8, cx=2.24, cy=-1.52, elapsed=6593ms
+[A*] expanded=35000, f=61.5, cx=1.15, cy=-1.14, elapsed=7734ms
+[A*] expanded=40000, f=62.0, cx=1.56, cy=-0.08, elapsed=8896ms
+[A*] expanded=5000, f=192.3, cx=4.59, cy=-4.67, elapsed=1093ms
+[A*] expanded=10000, f=193.5, cx=6.63, cy=-4.27, elapsed=2226ms
+[A*] expanded=15000, f=192.0, cx=5.21, cy=-4.53, elapsed=3379ms
+[A*] expanded=20000, f=191.7, cx=6.15, cy=-4.29, elapsed=4542ms
+[A*] expanded=25000, f=191.6, cx=6.45, cy=-4.15, elapsed=5681ms
+[A*] expanded=30000, f=194.1, cx=4.81, cy=-4.63, elapsed=6850ms
+[A*] expanded=35000, f=193.3, cx=6.28, cy=-4.14, elapsed=8010ms
+[A*] expanded=40000, f=191.9, cx=6.63, cy=-3.86, elapsed=9198ms
+[A*] expanded=45000, f=191.8, cx=4.62, cy=-4.64, elapsed=10358ms
+[A*] expanded=50000, f=186.1, cx=6.76, cy=-3.82, elapsed=11539ms
+[A*] expanded=55000, f=188.0, cx=6.42, cy=-4.01, elapsed=12698ms
+[A*] expanded=60000, f=187.8, cx=6.78, cy=-3.66, elapsed=13853ms
+[A*] expanded=65000, f=188.0, cx=6.02, cy=-4.25, elapsed=15050ms
+[A*] expanded=70000, f=188.6, cx=7.19, cy=-4.01, elapsed=16202ms
+[A*] expanded=75000, f=187.0, cx=6.67, cy=-3.70, elapsed=17355ms
+[A*] expanded=80000, f=186.9, cx=6.47, cy=-3.90, elapsed=18501ms
+[A*] expanded=85000, f=188.7, cx=6.69, cy=-3.65, elapsed=19723ms
+    y=-4.99m (刚好在内)                 可规划       失败 29035.2  FAIL
+    y=5.01m (刚好超出)                   拒绝   拒绝(立即)     0.0  PASS
+    y=-5.01m (刚好超出)                  拒绝   拒绝(立即)     0.0  PASS
+
+  [3-e] 走廊约束 vs NoCorr（相同起点，不同约束）
+                    起点  Corridor(ms)  NoCorr(ms)  一致?
+    ----------------------------------------------------
+             默认起点 0.0m           0.3         0.3  OK 
+               侧偏+0.5m         185.0       212.9  OK 
+               侧偏-0.5m         119.7       142.2  OK 
+
+  AC-4  标准成功率 ≥8/8  : [32mPASS[0m (8/8, avg=6.9ms)
+  AC-5  标准avg ≤500ms  : [32mPASS[0m (6.9ms)
+  AC-6  大偏航 ≤3000ms : [32mPASS[0m (4/4, max=208.0ms)
+  AC-6b 中等y avg≤8000ms & max≤12000ms : [32mPASS[0m (8/8, avg=399.5ms, max=799.4ms)
+  AC-7  超限立即拒绝 ≤10ms : [32mPASS[0m (3/3)
+  AC-8  路径无碰撞(Robust)    : [32mPASS[0m (0 失败)
+  AC-9  边界正确性            : [31mFAIL[0m (2/4)
+
+========================================================================
+ 验收结果汇总
+========================================================================
+  [32mPASS[0m  AC-1
+  [32mPASS[0m  AC-2
+  [32mPASS[0m  AC-3
+  [32mPASS[0m  AC-4
+  [32mPASS[0m  AC-5
+  [32mPASS[0m  AC-8(plan)
+  [32mPASS[0m  AC-6b(中等y两阶段)
+  [32mPASS[0m  AC-4(robust)
+  [32mPASS[0m  AC-5(robust)
+  [32mPASS[0m  AC-6
+  [32mPASS[0m  AC-7
+  [32mPASS[0m  AC-8(robust)
+  [31mFAIL[0m  AC-9
+
+  总计: 12/13 通过  — SOME FAIL ✗
+
+  失败板块: AC-9

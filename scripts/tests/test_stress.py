@@ -203,12 +203,17 @@ def run_case_worker(case):
         'ok': ok,
         'elapsed_ms': elapsed_ms,
         'expanded': stats.get('expanded', 0),
+        'level': stats.get('level', ''),
         'timed_out': timed_out,
         'expect_fail': expect_fail,
         'collision': False,
         'dangerous_margin': False,
         'min_margin': 999.0
     }
+    
+    # Attach full case info for timeout analysis
+    if timed_out:
+        result['full_case'] = case
     
     # ── 核心：完整轨迹碰撞验证 ──
     if ok and not expect_fail:
@@ -308,6 +313,7 @@ def main():
     }
     
     collision_cases_to_export = []
+    timeout_cases_to_export = []
     
     try:
         try:
@@ -330,6 +336,7 @@ def main():
             else:
                 if res['timed_out']:
                     counts['TIMEOUT'] += 1
+                    timeout_cases_to_export.append(res)
                 elif res['expect_fail']:
                     counts['EXPECTED_FAIL'] += 1
                 else:
@@ -401,6 +408,46 @@ def main():
             
         print(f"\n=> Exported {len(export_data)} collision cases to {json_path}")
         print("   Use these parameters to reproduce the physical collisions in GUI.")
+
+    # ── 导出超时用例详情 ──
+    if timeout_cases_to_export:
+        os.makedirs("logs", exist_ok=True)
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        json_path_to = f"logs/stress_timeouts_{ts}.json"
+
+        to_data = []
+        for c in timeout_cases_to_export:
+            fc = c.get('full_case', {})
+            to_data.append({
+                'case_id': c['id'],
+                'type': c['type'],
+                'elapsed_ms': round(c['elapsed_ms'], 1),
+                'expanded': c['expanded'],
+                'level': c.get('level', ''),
+                'start': {'x': fc.get('x'), 'y': fc.get('y'), 'th': fc.get('th')},
+                'obstacles': fc.get('obstacles', []),
+                'n_obs': len(fc.get('obstacles', [])),
+            })
+
+        with open(json_path_to, 'w', encoding='utf-8') as f:
+            json.dump(to_data, f, indent=2)
+
+        # ── 打印超时分析摘要 ──
+        print(f"\n=> Exported {len(to_data)} timeout cases to {json_path_to}")
+        # 按 type 分类统计
+        from collections import Counter
+        type_counts = Counter(c['type'] for c in to_data)
+        nobs_counts = Counter(c['n_obs'] for c in to_data)
+        print(f"\n  Timeout by case type:")
+        for t, cnt in type_counts.most_common():
+            print(f"    {t}: {cnt}")
+        print(f"  Timeout by obstacle count:")
+        for n, cnt in sorted(nobs_counts.items()):
+            print(f"    {n} obstacles: {cnt}")
+        elapsed_vals = [c['elapsed_ms'] for c in to_data]
+        if elapsed_vals:
+            print(f"  Elapsed: min={min(elapsed_vals):.0f}ms, max={max(elapsed_vals):.0f}ms, "
+                  f"avg={sum(elapsed_vals)/len(elapsed_vals):.0f}ms")
 
 if __name__ == "__main__":
     mp.freeze_support()

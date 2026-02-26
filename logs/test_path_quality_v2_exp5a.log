@@ -1,0 +1,20 @@
+================================================================================
+ PATH QUALITY TEST SUITE 
+================================================================================
+
+[Block A] Regression Cases
+  PASS | REG-01 Screenshot Bug  | OK | L:L1_8_2d_skeleton_sp2.5 Exp:0 5937ms
+  PASS | REG-02 Extreme Angle   | OK | L:L1_8_2d_skeleton_sp2.5 Exp:0 7590ms
+  PASS | REG-03 Neg Offset      | OK | L:L1_8_2d_skeleton_sp2.5 Exp:0 4491ms
+
+[Block B] Parameter Sweep (Large Angle + Obstacle)
+  Block B: 36/36 passed
+
+[Block C] Planning Level Baselines
+  PASS | L1 Pure RS       | OK | L:L1_pure_rs Exp:0 0ms
+  PASS | L1.8 2D Skel     | TIMEOUT (quality filters blocked fast bad path)
+  PASS | L2 A*            | TIMEOUT (quality filters blocked fast bad path)
+
+================================================================================
+ RESULT: 42/42 — ALL PASS
+================================================================================
