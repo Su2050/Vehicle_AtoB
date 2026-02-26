@@ -15,6 +15,12 @@ from primitives import (
     RS_GOAL_X, RS_GOAL_Y, RS_GOAL_TH,
 )
 
+_QUALITY_EPS = 1e-3
+_QM1_DETOUR_MAX = 5.0
+_QM2_LATERAL_EXTRA = 3.0
+_QM3_X_BACKTRACK_EXTRA = 3.0
+_QM5_RS_DETOUR_MAX = 4.0
+
 
 def _trace_gradient_path(dg, start_wx, start_wy):
     """
@@ -292,15 +298,23 @@ def _stitch_waypoints(waypoints, start_th, collision_fn, max_rs_paths, deadline=
             target_th = RS_GOAL_TH
 
         if is_last:
-            seg = _try_rs_connect(wx1, wy1, cur_th, wx2, wy2, target_th,
-                                  collision_fn, max_paths=max_rs_paths)
-            if seg is None:
-                for small_off in [0.04, -0.04, 0.08, -0.08]:
-                    seg = _try_rs_connect(wx1, wy1, cur_th,
-                                          wx2, wy2, target_th + small_off,
-                                          collision_fn, max_paths=max_rs_paths)
-                    if seg is not None:
-                        break
+            seg = None
+            seg_best_len = float('inf')
+            seg_best_lat = float('inf')
+            for off in [0.0, 0.04, -0.04, 0.08, -0.08]:
+                cand = _try_rs_connect(
+                    wx1, wy1, cur_th, wx2, wy2, target_th + off,
+                    collision_fn, max_paths=max_rs_paths)
+                if cand is None:
+                    continue
+                cand_len = _trajectory_length(cand)
+                cand_lat = max(abs(p[1]) for p in cand)
+                # Prefer smaller lateral excursion, then shorter final segment.
+                if (cand_lat < seg_best_lat - 1e-9) or (
+                        abs(cand_lat - seg_best_lat) <= 1e-9 and cand_len < seg_best_len):
+                    seg = cand
+                    seg_best_lat = cand_lat
+                    seg_best_len = cand_len
 
             # Backtrack fallback: redo last k segments with goal-viable headings
             if seg is None:
@@ -409,6 +423,49 @@ def _trajectory_length(traj):
     return total
 
 
+def _evaluate_traj_quality(start_x, start_y, traj):
+    """
+    Compute L1.8 quality metrics aligned with test_path_quality_v2 thresholds.
+    Returns (ok, score, metrics_dict).
+    """
+    if not traj or len(traj) < 2:
+        return False, float('inf'), {}
+
+    tlen = _trajectory_length(traj)
+    direct = math.hypot(start_x - RS_GOAL_X, start_y - RS_GOAL_Y)
+    detour = tlen / max(direct, 2.0)
+    max_abs_y = max(abs(p[1]) for p in traj)
+    max_x = max(p[0] for p in traj)
+    rs_direct = math.hypot(traj[0][0] - traj[-1][0], traj[0][1] - traj[-1][1])
+    rs_detour = tlen / max(rs_direct, 1.0)
+
+    allowed_y = max(abs(start_y), abs(RS_GOAL_Y)) + _QM2_LATERAL_EXTRA
+    allowed_x = start_x + _QM3_X_BACKTRACK_EXTRA
+
+    ok = (
+        detour <= (_QM1_DETOUR_MAX + _QUALITY_EPS)
+        and max_abs_y <= (allowed_y + _QUALITY_EPS)
+        and max_x <= (allowed_x + _QUALITY_EPS)
+        and rs_detour <= (_QM5_RS_DETOUR_MAX + _QUALITY_EPS)
+    )
+    # Quality-first score: prioritize smaller detour/lateral excursions,
+    # then use geometric length as tie breaker.
+    score = (
+        detour * 10.0
+        + (max_abs_y / max(allowed_y, 1.0)) * 8.0
+        + (max_x / max(allowed_x, 1.0)) * 4.0
+        + rs_detour * 8.0
+        + tlen * 0.2
+    )
+    return ok, score, {
+        'detour': detour,
+        'max_abs_y': max_abs_y,
+        'max_x': max_x,
+        'rs_detour': rs_detour,
+        'traj_len': tlen,
+    }
+
+
 _HEADING_PULL_DIST = 1.5
 
 
@@ -434,28 +491,46 @@ def plan_2d_fallback(dijkstra_grid, start_x, start_y, start_th,
         return False, None
 
     if obstacles:
-        alt = _dijkstra_2d_path(
-            start_x, start_y, RS_GOAL_X, RS_GOAL_Y, obstacles)
-        if len(alt) >= 2:
-            candidates.append(alt)
+        candidate_cfgs = [
+            # Prefer narrower hard inflation to avoid excessive detours.
+            (0.25, MIN_TURN_RADIUS * 0.9),
+            (0.22, MIN_TURN_RADIUS * 0.8),
+            (0.30, MIN_TURN_RADIUS * 1.0),
+        ]
+        for inf_r, soft_r in candidate_cfgs:
+            if deadline is not None and time.perf_counter() > deadline:
+                break
+            alt = _dijkstra_2d_path(
+                start_x, start_y, RS_GOAL_X, RS_GOAL_Y, obstacles,
+                inflate_radius=inf_r, soft_radius=soft_r)
+            if len(alt) >= 2:
+                candidates.append(alt)
 
     # Skip heading-biased variants if deadline is tight
     if deadline is None or time.perf_counter() + 1.0 < deadline:
         for sign in (1.0, -1.0):
             if deadline is not None and time.perf_counter() > deadline:
                 break
-            px = start_x - sign * _HEADING_PULL_DIST * math.cos(start_th)
-            py = start_y - sign * _HEADING_PULL_DIST * math.sin(start_th)
-            if px < 0.0 or px > 9.5 or py < -5.5 or py > 5.5:
-                continue
-            pull_path = _dijkstra_2d_path(
-                px, py, RS_GOAL_X, RS_GOAL_Y, obstacles)
-            if len(pull_path) >= 2:
-                candidates.append([(start_x, start_y)] + pull_path)
+            for pull_dist in (_HEADING_PULL_DIST, 1.0):
+                px = start_x - sign * pull_dist * math.cos(start_th)
+                py = start_y - sign * pull_dist * math.sin(start_th)
+                if px < 0.0 or px > 9.5 or py < -5.5 or py > 5.5:
+                    continue
+                pull_path = _dijkstra_2d_path(
+                    px, py, RS_GOAL_X, RS_GOAL_Y, obstacles,
+                    inflate_radius=0.22, soft_radius=MIN_TURN_RADIUS * 0.8)
+                if len(pull_path) >= 2:
+                    candidates.append([(start_x, start_y)] + pull_path)
 
-    # Reduced spacings for speed
-    spacings = [spacing, spacing * 2.0]
+    # Try lower spacing first to reduce lateral drift in narrow passages.
+    spacings = []
+    for sp in [spacing * 0.6, spacing * 0.8, spacing, spacing * 1.5]:
+        sp = max(0.7, min(3.0, sp))
+        if all(abs(sp - existing) > 1e-6 for existing in spacings):
+            spacings.append(sp)
+
     best_traj = None
+    best_score = float('inf')
     best_len = float('inf')
     for raw in candidates:
         if deadline is not None and time.perf_counter() > deadline:
@@ -469,9 +544,14 @@ def plan_2d_fallback(dijkstra_grid, start_x, start_y, start_th,
             ok, traj = _stitch_waypoints(
                 wps, start_th, collision_fn, max_rs_paths, deadline=deadline)
             if ok:
-                tlen = _trajectory_length(traj)
-                if tlen < best_len:
+                pass_qm, score, qm = _evaluate_traj_quality(start_x, start_y, traj)
+                if not pass_qm:
+                    continue
+                tlen = qm['traj_len']
+                if (score < best_score - 1e-9) or (
+                        abs(score - best_score) <= 1e-9 and tlen < best_len):
                     best_traj = traj
+                    best_score = score
                     best_len = tlen
 
     if best_traj is not None:
@@ -485,11 +565,11 @@ def plan_2d_fallback(dijkstra_grid, start_x, start_y, start_th,
         candidates2 = []
         alt2 = _dijkstra_2d_path(
             start_x, start_y, RS_GOAL_X, RS_GOAL_Y, obstacles,
-            inflate_radius=0.2)
+            inflate_radius=0.18, soft_radius=MIN_TURN_RADIUS * 0.7)
         if len(alt2) >= 2:
             candidates2.append(alt2)
 
-        fine_spacings = [spacing, spacing * 0.6]
+        fine_spacings = [max(0.7, spacing * 0.5), max(0.8, spacing * 0.7), spacing]
         for raw in candidates2:
             if deadline is not None and time.perf_counter() > deadline:
                 break
@@ -502,9 +582,14 @@ def plan_2d_fallback(dijkstra_grid, start_x, start_y, start_th,
                 ok, traj = _stitch_waypoints(
                     wps, start_th, collision_fn, max_rs_paths, deadline=deadline)
                 if ok:
-                    tlen = _trajectory_length(traj)
-                    if tlen < best_len:
+                    pass_qm, score, qm = _evaluate_traj_quality(start_x, start_y, traj)
+                    if not pass_qm:
+                        continue
+                    tlen = qm['traj_len']
+                    if (score < best_score - 1e-9) or (
+                            abs(score - best_score) <= 1e-9 and tlen < best_len):
                         best_traj = traj
+                        best_score = score
                         best_len = tlen
 
         if best_traj is not None:

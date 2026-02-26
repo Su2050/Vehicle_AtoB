@@ -13,7 +13,7 @@ import rs
 from primitives import (
     DT, M_PI, PI2, ALIGN_GOAL_DYAW, MIN_TURN_RADIUS,
     RS_GOAL_X, RS_GOAL_Y, RS_GOAL_TH,
-    PREAPPROACH_Y_MAX, MAX_PLANNABLE_Y,
+    PREAPPROACH_Y_MAX, MAX_PLANNABLE_Y, simulate_path,
 )
 from collision import check_collision
 from rs_utils import plan_path_pure_rs
@@ -156,6 +156,13 @@ def _path_goes_behind_wall(traj):
 
 _PATH_LENGTH_RATIO_MAX = 3.0
 _PATH_LATERAL_EXTRA_MAX = 2.0
+_QUALITY_EPS = 1e-3
+_QM1_DETOUR_MAX = 5.0
+_QM2_LATERAL_EXTRA = 3.0
+_QM3_X_BACKTRACK_EXTRA = 3.0
+_QM4_BEHIND_WALL_PTS_MAX = 5
+_QM5_RS_DETOUR_MAX = 4.0
+_QM6_GEAR_SHIFT_MAX = 8
 
 
 def _count_gear_shifts(acts):
@@ -168,6 +175,58 @@ def _count_gear_shifts(acts):
             s += 1
             last_g = a[0]
     return s
+
+
+def _trajectory_length(traj):
+    if not traj or len(traj) < 2:
+        return 0.0
+    return sum(
+        math.hypot(traj[i][0] - traj[i - 1][0], traj[i][1] - traj[i - 1][1])
+        for i in range(1, len(traj))
+    )
+
+
+def _check_l18_quality(start_x, start_y, start_th, acts, rs_traj, precomp_prim):
+    """
+    Apply the same QM thresholds as test_path_quality_v2 before accepting L1.8.
+    """
+    traj_astar = simulate_path(start_x, start_y, start_th, acts, precomp_prim) if acts else [(start_x, start_y, start_th)]
+    full_traj = list(traj_astar)
+    if rs_traj:
+        full_traj.extend(rs_traj[1:] if full_traj else rs_traj)
+    if not full_traj:
+        return False, "empty_traj"
+
+    length = _trajectory_length(full_traj)
+    euclidean = math.hypot(start_x - RS_GOAL_X, start_y - RS_GOAL_Y)
+    detour_ratio = length / max(euclidean, 2.0)
+    max_abs_y = max(abs(p[1]) for p in full_traj)
+    max_x = max(p[0] for p in full_traj)
+    behind_wall_cnt = sum(1 for p in full_traj if p[0] < _WALL_X and abs(p[1]) > _WALL_CORRIDOR_Y)
+
+    rs_detour = 0.0
+    if rs_traj and len(rs_traj) > 1:
+        rs_len = _trajectory_length(rs_traj)
+        rs_euclidean = math.hypot(rs_traj[0][0] - rs_traj[-1][0], rs_traj[0][1] - rs_traj[-1][1])
+        rs_detour = rs_len / max(rs_euclidean, 1.0)
+
+    shifts = _count_gear_shifts(acts)
+    allowed_y = max(abs(start_y), abs(RS_GOAL_Y)) + _QM2_LATERAL_EXTRA
+    allowed_x = start_x + _QM3_X_BACKTRACK_EXTRA
+
+    if detour_ratio > _QM1_DETOUR_MAX + _QUALITY_EPS:
+        return False, "qm1_detour"
+    if max_abs_y > allowed_y + _QUALITY_EPS:
+        return False, "qm2_lateral"
+    if max_x > allowed_x + _QUALITY_EPS:
+        return False, "qm3_max_x"
+    if behind_wall_cnt > _QM4_BEHIND_WALL_PTS_MAX:
+        return False, "qm4_behind_wall"
+    if rs_detour > _QM5_RS_DETOUR_MAX + _QUALITY_EPS:
+        return False, "qm5_rs_detour"
+    if shifts > _QM6_GEAR_SHIFT_MAX:
+        return False, "qm6_shifts"
+    return True, "ok"
 
 
 def _path_is_unreasonable(traj, sx, sy):
@@ -593,10 +652,12 @@ def plan_path_robust_obs_v2(x0, y0, theta0, precomp_prim,
                     dijkstra_grid, sx2, sy2, sth2, coll_relaxed,
                     spacing=spc, max_rs_paths=12, obstacles=obstacles,
                     deadline=l18_deadline)
-                # L1.8 paths intentionally detour around obstacles, so skip
-                # _path_is_unreasonable (designed for L1/L1.5 wild arcs).
-                # Only check _path_goes_behind_wall for safety.
                 if fb2d_ok and not _path_goes_behind_wall(fb2d_traj):
+                    qm_ok, qm_reason = _check_l18_quality(
+                        x0, y0, theta0, prefix_acts, fb2d_traj, precomp_prim)
+                    if not qm_ok:
+                        stats['l18_reject_reason'] = qm_reason
+                        continue
                     total_ms = round((time.perf_counter() - t_robust) * 1000.0, 1)
                     stats.update(
                         expanded=0, elapsed_ms=total_ms,
