@@ -31,11 +31,11 @@ def test_obstacle_collision():
 
 def test_obstacle_edge_safe():
     """多圆模型：所有碰撞圆与障碍物距离均 > HALF_WIDTH(0.25m)，应返回 (True, 'OK')
-    障碍物: x∈[3,4], y∈[0,1]
-    叉车在 (2.2, 0.5, 0.0)，th=0 → 最近圆心 (2.7, 0.5)
-    距离: dx=3.0-2.7=0.3 > 0.25 → safe
+    障碍物: x∈[5,6], y∈[0,1]
+    叉车在 (2.2, 0.5, 0.0)，th=0 → 前端最远圆 offset=-1.87 at (4.07, 0.5)
+    距离: dx=5.0-4.07=0.93 > 0.25 → safe
     (使用 x=2.2 避开走廊安全约束 nx<=2.05)"""
-    obs = [{'x': 3.0, 'y': 0.0, 'w': 1.0, 'h': 1.0}]
+    obs = [{'x': 5.0, 'y': 0.0, 'w': 1.0, 'h': 1.0}]
     ok, reason = check_collision(2.2, 0.5, 0.0, obstacles=obs)
     assert ok is True
     assert reason == 'OK'
@@ -83,10 +83,10 @@ def test_multiple_obstacles():
 
 def test_multi_circle_front_collision():
     """多圆模型：前端碰撞圆（叉齿方向）检测碰撞
-    障碍物: x∈[1.0,2.0], y∈[-0.5,0.5]
-    叉车在 (3.5, 0.0, 0.0)，th=0 → 前端圆 offset=-1.87 at (1.63, 0.0)
-    1.63 在 [1.0, 2.0] 内，距离=0 < 0.25 → collision"""
-    obs = [{'x': 1.0, 'y': -0.5, 'w': 1.0, 'h': 1.0}]
+    障碍物: x∈[5.0,6.0], y∈[-0.5,0.5]
+    叉车在 (3.5, 0.0, 0.0)，th=0 → 前端圆 offset=-1.87 at (5.37, 0.0)
+    5.37 在 [5.0, 6.0] 内，距离=0 < 0.25 → collision"""
+    obs = [{'x': 5.0, 'y': -0.5, 'w': 1.0, 'h': 1.0}]
     ok, reason = check_collision(3.5, 0.0, 0.0, obstacles=obs)
     assert ok is False
     assert reason == 'OBSTACLE'
@@ -94,11 +94,11 @@ def test_multi_circle_front_collision():
 def test_multi_circle_angled():
     """多圆模型：斜向角度时碰撞检测
     叉车在 (4.0, 0.0, pi/2)，th=pi/2 → cos=0, sin=1
-    车身沿 y 方向展开：circles at (4.0, offset) for each offset
-    障碍物: x∈[3.5,4.5], y∈[2.0,3.0]
-    前端圆 offset=-1.87 at (4.0, -1.87) → safe
-    后端圆 offset=0.5 at (4.0, 0.5) → safe"""
-    obs = [{'x': 3.5, 'y': 2.0, 'w': 1.0, 'h': 1.0}]
+    车身沿 y 方向展开：px=4.0, py=-offset for each offset
+    前端圆 offset=-1.87 → py=1.87, 后端圆 offset=0.5 → py=-0.5
+    障碍物: x∈[3.5,4.5], y∈[2.5,3.5]
+    前端圆 at (4.0, 1.87)，dy=2.5-1.87=0.63 > 0.25 → safe"""
+    obs = [{'x': 3.5, 'y': 2.5, 'w': 1.0, 'h': 1.0}]
     ok, reason = check_collision(4.0, 0.0, math.pi / 2, obstacles=obs)
     assert ok is True
     assert reason == 'OK'
