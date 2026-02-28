@@ -35,6 +35,15 @@ TWO_STAGE_TH_THRESH = 0.7  # rad ≈ 40°
 # Python A* 可规划的最大横向偏移（超出后直接返回 IMPOSSIBLE+说明）
 MAX_PLANNABLE_Y = 5.0  # 放开限制（足以覆盖 y=2.47m 等极端侧偏）
 
+# === 多圆碰撞模型参数 ===
+# 车身宽度 0.5m，半宽作为每个碰撞圆的半径
+VEHICLE_HALF_WIDTH = 0.25
+# 6 个碰撞检测圆的局部 x 偏移量（从后向前沿车身中心线分布）
+# 正值 = 后方，负值 = 前方（叉齿方向），间距 ≤ 2×HALF_WIDTH=0.5m 确保无缝覆盖
+VEHICLE_CHECK_OFFSETS = (0.5, 0.0, -0.5, -1.0, -1.45, -1.87)
+# 参考点到最远碰撞圆边缘的最大距离（用于快速排斥）
+VEHICLE_MAX_RADIUS = 1.87 + VEHICLE_HALF_WIDTH  # 2.12m
+
 def init_primitives():
     """前向积分预推演 30 种运动基元，并将相对坐标增量与相对角度的正余弦值进行缓存"""
     gears = [('F', 0.25), ('R', -0.20)]

@@ -15,8 +15,8 @@ import astar_core
 
 
 def _make_collision_fn(no_corridor=False):
-    def collision_fn(nx, ny, nth, sin_nth=None):
-        return check_collision(nx, ny, nth, sin_nth, no_corridor=no_corridor)
+    def collision_fn(nx, ny, nth, sin_nth=None, cos_nth=None):
+        return check_collision(nx, ny, nth, sin_nth, cos_nth=cos_nth, no_corridor=no_corridor)
     return collision_fn
 
 

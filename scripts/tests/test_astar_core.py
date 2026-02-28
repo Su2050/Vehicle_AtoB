@@ -6,8 +6,8 @@ from astar_core import plan_path
 
 
 def _make_collision_fn(no_corridor=False):
-    def collision_fn(nx, ny, nth, sin_nth=None):
-        return check_collision(nx, ny, nth, sin_nth, no_corridor=no_corridor)
+    def collision_fn(nx, ny, nth, sin_nth=None, cos_nth=None):
+        return check_collision(nx, ny, nth, sin_nth, cos_nth=cos_nth, no_corridor=no_corridor)
     return collision_fn
 
 
@@ -25,7 +25,7 @@ def test_astar_simple_straight():
 def test_astar_collision_fn_injection():
     """传入始终返回 False 的 collision_fn，应返回 (False, None, None)"""
     prims = init_primitives()
-    def reject_all(nx, ny, nth, sin_nth=None):
+    def reject_all(nx, ny, nth, sin_nth=None, cos_nth=None):
         return False, 'REJECT'
     ok, acts, _ = plan_path(2.8, 0.0, 0.0, prims,
                             collision_fn=reject_all,

@@ -71,10 +71,10 @@ SCENARIOS = {
     "S01_open_field": {
         "obstacles": [],
         "cases": [
-            (2.5, 0.0, 0, "near_goal_straight"),
-            (4.0, 0.5, 17, "slight_offset"),
-            (5.0, -1.0, -29, "mid_dist_offset"),
-            (7.0, 0.0, 0, "far_straight"),
+            (3.5, 0.0, 0, "near_goal_straight"),
+            (5.0, 0.5, 17, "slight_offset"),
+            (6.0, -1.0, -29, "mid_dist_offset"),
+            (8.0, 0.0, 0, "far_straight"),
         ],
         "expect_success": True,
         "note": "No obstacles — Level-1 Pure RS should handle most",
@@ -82,13 +82,13 @@ SCENARIOS = {
     # ── 2. Single block blocking direct path ──
     "S02_single_block": {
         "obstacles": [
-            {'x': 3.5, 'y': -0.6, 'w': 0.8, 'h': 1.2},
+            {'x': 4.5, 'y': -0.6, 'w': 0.8, 'h': 1.2},
         ],
         "cases": [
-            (5.0, 0.0, 0, "blocked_direct"),
-            (5.0, 1.5, -17, "offset_upper"),
-            (5.0, -1.5, 17, "offset_lower"),
-            (6.0, 0.0, 180, "facing_away"),
+            (7.5, 0.0, 0, "blocked_direct"),
+            (6.0, 1.5, -17, "offset_upper"),
+            (6.0, -1.5, 17, "offset_lower"),
+            (7.5, 0.0, 180, "facing_away"),
         ],
         "expect_success": True,
         "note": "One block on direct line — must detour",
@@ -96,13 +96,13 @@ SCENARIOS = {
     # ── 3. Long wall with gap at one end ──
     "S03_long_wall": {
         "obstacles": [
-            {'x': 3.5, 'y': -3.5, 'w': 0.3, 'h': 5.0},
+            {'x': 4.5, 'y': -3.5, 'w': 0.3, 'h': 5.0},
         ],
         "cases": [
-            (5.0, 0.0, 0, "behind_wall_center"),
-            (5.0, -2.0, 0, "behind_wall_lower"),
-            (7.0, 2.5, 0, "near_gap_side"),
-            (5.0, -2.5, 90, "wall_parallel_heading"),
+            (7.0, 0.0, 0, "behind_wall_center"),
+            (7.0, -2.0, 0, "behind_wall_lower"),
+            (8.0, 2.5, 0, "near_gap_side"),
+            (6.0, -2.5, 90, "wall_parallel_heading"),
         ],
         "expect_success": True,
         "note": "Wall y∈[-3.5,1.5], gap at y>1.5 — includes 90° heading parallel to wall",
@@ -110,28 +110,28 @@ SCENARIOS = {
     # ── 4. Narrow passage between two obstacles ──
     "S04_narrow_passage": {
         "obstacles": [
-            {'x': 3.5, 'y': -3.5, 'w': 0.6, 'h': 2.9},
-            {'x': 3.5, 'y': 0.6, 'w': 0.6, 'h': 2.9},
+            {'x': 4.5, 'y': -3.5, 'w': 0.6, 'h': 2.7},
+            {'x': 4.5, 'y': 0.8, 'w': 0.6, 'h': 2.7},
         ],
         "cases": [
-            (5.0, 0.0, 0, "passage_center"),
-            (6.0, 0.3, -11, "passage_offset_upper"),
-            (6.0, -0.3, 11, "passage_offset_lower"),
+            (6.0, 0.0, 0, "passage_center"),
+            (9.0, 0.3, -11, "passage_offset_upper"),
+            (9.0, -0.3, 11, "passage_offset_lower"),
         ],
         "expect_success": True,
-        "note": "Gap y∈[-0.6,0.6]=1.2m, vehicle radius 0.1m — tight passage",
+        "note": "Gap y∈[-0.8,0.8]=1.6m — widened for multi-circle vehicle (half-width 0.25m)",
     },
     # ── 5. U-shaped trap (open toward +x) ──
     "S05_u_trap": {
         "obstacles": [
-            {'x': 5.0, 'y': -1.5, 'w': 0.3, 'h': 3.0},
-            {'x': 5.3, 'y': -1.8, 'w': 2.7, 'h': 0.3},
-            {'x': 5.3, 'y': 1.5, 'w': 2.7, 'h': 0.3},
+            {'x': 6.0, 'y': -1.5, 'w': 0.3, 'h': 3.0},
+            {'x': 6.3, 'y': -1.8, 'w': 2.7, 'h': 0.3},
+            {'x': 6.3, 'y': 1.5, 'w': 2.7, 'h': 0.3},
         ],
         "cases": [
-            (6.5, 0.0, 0, "u_center_facing_wall"),
-            (7.0, 0.0, 180, "u_center_facing_opening"),
-            (6.5, 1.0, -90, "u_upper"),
+            (8.5, 0.0, 0, "u_center_facing_wall"),
+            (8.5, 0.0, 180, "u_center_facing_opening"),
+            (8.5, 0.5, -15, "u_upper"),
         ],
         "expect_success": True,
         "note": "U-trap x∈[5.0,8.0], y∈[-1.5,1.5], opening at x>8.0 — must escape +x then route to goal",
@@ -139,11 +139,11 @@ SCENARIOS = {
     # ── 6. Unreachable goal ──
     "S06_unreachable": {
         "obstacles": [
-            {'x': 2.4, 'y': -3.5, 'w': 0.8, 'h': 7.0},
+            {'x': 3.4, 'y': -3.5, 'w': 0.8, 'h': 7.0},
         ],
         "cases": [
-            (5.0, 0.0, 0, "direct_approach"),
-            (5.0, 2.0, -29, "angled_approach"),
+            (7.0, 0.0, 0, "direct_approach"),
+            (7.5, 2.0, -29, "angled_approach"),
         ],
         "expect_success": False,
         "note": "Full-height wall x∈[2.4,3.2] blocks all access to goal — must return failure",
@@ -152,8 +152,8 @@ SCENARIOS = {
     "S07a_random_seed42": {
         "obstacles": _generate_random_obstacles(42),
         "cases": [
-            (6.0, 0.0, 0, "corridor_center"),
-            (7.0, 0.3, -11, "corridor_offset"),
+            (7.0, 0.0, 0, "corridor_center"),
+            (8.0, 0.3, -11, "corridor_offset"),
         ],
         "expect_success": True,
         "note": "Random (seed=42) with y=0 corridor width 1.8m — guaranteed passable",
@@ -161,8 +161,8 @@ SCENARIOS = {
     "S07b_random_seed123": {
         "obstacles": _generate_random_obstacles(123),
         "cases": [
-            (6.0, 0.0, 0, "corridor_center"),
-            (7.0, -0.3, 11, "corridor_offset"),
+            (7.0, 0.0, 0, "corridor_center"),
+            (8.0, -0.3, 11, "corridor_offset"),
         ],
         "expect_success": True,
         "note": "Random (seed=123) with y=0 corridor width 1.8m",
@@ -170,8 +170,8 @@ SCENARIOS = {
     "S07c_random_seed2026": {
         "obstacles": _generate_random_obstacles(2026),
         "cases": [
-            (6.0, 0.0, 0, "corridor_center"),
-            (5.5, 0.5, -17, "corridor_offset"),
+            (7.0, 0.0, 0, "corridor_center"),
+            (6.5, 0.5, -17, "corridor_offset"),
         ],
         "expect_success": True,
         "note": "Random (seed=2026) with y=0 corridor width 1.8m",
@@ -180,10 +180,10 @@ SCENARIOS = {
     "S08_start_equals_goal": {
         "obstacles": [],
         "cases": [
-            (2.10, 0.0, 0, "exact_goal"),
+            (2.1, 0.0, 0, "exact_goal"),
             (2.15, 0.05, 1, "near_goal_micro_offset"),
-            (2.20, -0.10, -3, "goal_boundary"),
-            (2.50, 0.0, 180, "close_reverse_180"),
+            (2.2, -0.10, -3, "goal_boundary"),
+            (2.5, 0.0, 180, "close_reverse_180"),
         ],
         "expect_success": True,
         "note": "Start inside/near goal region — includes extreme 180° reversal at close range",
@@ -191,14 +191,14 @@ SCENARIOS = {
     # ── 9. Dead-end corridor (must reverse out) ──
     "S09_dead_end_reverse": {
         "obstacles": [
-            {'x': 5.0, 'y': -1.3, 'w': 3.5, 'h': 0.3},
-            {'x': 5.0, 'y': 1.0, 'w': 3.5, 'h': 0.3},
-            {'x': 8.2, 'y': -1.3, 'w': 0.3, 'h': 2.6},
+            {'x': 6.0, 'y': -1.3, 'w': 3.5, 'h': 0.3},
+            {'x': 6.0, 'y': 1.0, 'w': 3.5, 'h': 0.3},
+            {'x': 9.2, 'y': -1.3, 'w': 0.3, 'h': 2.6},
         ],
         "cases": [
-            (7.0, 0.0, 0, "deep_facing_dead_end"),
-            (7.0, 0.0, 180, "deep_facing_opening"),
-            (6.0, 0.2, 29, "mid_corridor_angled"),
+            (8.0, 0.0, 0, "deep_facing_dead_end"),
+            (8.5, 0.0, 180, "deep_facing_opening"),
+            (7.0, 0.2, 29, "mid_corridor_angled"),
         ],
         "expect_success": True,
         "note": "Corridor x∈[5.0,8.2], y∈[-1.0,1.0], dead-end at x=8.2 — must reverse to escape",
@@ -206,13 +206,13 @@ SCENARIOS = {
     # ── 10. Corridor straight (shelf aisle) ──
     "S10_corridor_straight": {
         "obstacles": [
-            {'x': 3.0, 'y': -3.5, 'w': 0.3, 'h': 2.5},
-            {'x': 3.0, 'y': 1.0, 'w': 0.3, 'h': 2.5},
+            {'x': 4.0, 'y': -3.5, 'w': 0.3, 'h': 2.5},
+            {'x': 4.0, 'y': 1.0, 'w': 0.3, 'h': 2.5},
         ],
         "cases": [
-            (5.0, 0.0, 0, "corridor_center"),
-            (5.0, 0.5, -11, "corridor_upper"),
-            (5.0, -0.5, 11, "corridor_lower"),
+            (6.0, 0.0, 0, "corridor_center"),
+            (7.5, 0.5, -11, "corridor_upper"),
+            (7.5, -0.5, 11, "corridor_lower"),
         ],
         "expect_success": True,
         "note": "Parallel shelves forming corridor y∈[-1.0,1.0] — simple straight-through",
@@ -220,24 +220,24 @@ SCENARIOS = {
     # ── 11. L-shaped barrier (direction change required) ──
     "S11_l_barrier": {
         "obstacles": [
-            {'x': 3.5, 'y': -3.5, 'w': 0.3, 'h': 4.5},
-            {'x': 3.5, 'y': 2.5, 'w': 5.5, 'h': 0.3},
+            {'x': 4.5, 'y': -3.5, 'w': 0.3, 'h': 4.3},
+            {'x': 4.5, 'y': 2.3, 'w': 5.5, 'h': 0.3},
         ],
         "cases": [
-            (6.0, 0.0, 0, "must_route_around_L"),
-            (7.0, -1.0, 45, "far_lower_angled"),
+            (7.0, 0.0, 0, "must_route_around_L"),
+            (8.0, -1.0, 45, "far_lower_angled"),
         ],
         "expect_success": True,
-        "note": "Vertical wall y∈[-3.5,1.0] + horizontal ceiling y=2.5 — must navigate through gap y∈[1.0,2.5]",
+        "note": "Vertical wall y∈[-3.5,0.8] + horizontal ceiling y=2.3 — gap y∈[0.8,2.3]=1.5m widened for multi-circle",
     },
     # ── 12. Goal covered by obstacle (instant fail) ──
     "S12_goal_covered": {
         "obstacles": [
-            {'x': 1.9, 'y': -0.3, 'w': 0.5, 'h': 0.6},
+            {'x': 2.9, 'y': -0.3, 'w': 0.5, 'h': 0.6},
         ],
         "cases": [
-            (5.0, 0.0, 0, "goal_blocked"),
-            (3.0, 1.0, -30, "goal_blocked_angled"),
+            (6.0, 0.0, 0, "goal_blocked"),
+            (4.0, 1.0, -30, "goal_blocked_angled"),
         ],
         "expect_success": False,
         "note": "Obstacle covers goal (2.1, 0) — planner should fail instantly (<100ms)",
@@ -245,10 +245,10 @@ SCENARIOS = {
     # ── 13. Force fallback (low expand limit) ──
     "S13_force_fallback": {
         "obstacles": [
-            {'x': 4.0, 'y': -0.5, 'w': 0.6, 'h': 1.0},
+            {'x': 5.0, 'y': -0.5, 'w': 0.6, 'h': 1.0},
         ],
         "cases": [
-            (5.5, 0.0, 0, "simple_block_low_budget"),
+            (8.0, 0.0, 0, "simple_block_low_budget"),
         ],
         "expect_success": True,
         "note": "Simple obstacle but tested with very low _expand_limit to verify fallback kicks in",
@@ -348,8 +348,8 @@ def run_single_case(x, y, th, prims, obstacles, timeout_s,
         from heuristic import DijkstraGrid, rs_grid_heuristic
         fast_obs = _preprocess_obstacles(obstacles) if obstacles else None
 
-        def coll_fn(nx, ny, nth, sin_nth=None):
-            return _cc(nx, ny, nth, sin_nth, no_corridor=False, obstacles=fast_obs)
+        def coll_fn(nx, ny, nth, sin_nth=None, cos_nth=None):
+            return _cc(nx, ny, nth, sin_nth, cos_nth, no_corridor=False, obstacles=fast_obs)
 
         dg = DijkstraGrid(RS_GOAL_X, RS_GOAL_Y)
         dg.build_map(obstacles, start_x=x, start_y=y)

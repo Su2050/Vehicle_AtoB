@@ -23,7 +23,8 @@ import multiprocessing as mp
 # 确保能 import 上层目录的模块
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from primitives import init_primitives, simulate_path, RS_GOAL_X, RS_GOAL_Y, RS_GOAL_TH, ALIGN_GOAL_DYAW
+from primitives import (init_primitives, simulate_path, RS_GOAL_X, RS_GOAL_Y, RS_GOAL_TH,
+                        ALIGN_GOAL_DYAW, VEHICLE_HALF_WIDTH, VEHICLE_CHECK_OFFSETS)
 from collision import check_collision
 from planner_obs import _preprocess_obstacles
 from planner_obs_v2 import plan_path_robust_obs_v2
@@ -250,24 +251,35 @@ def run_case_worker(case):
                     result['collision_source'] = 'acts'
                 break
                 
-            # 2. 计算危险边距 (仅障碍物距离)
+            # 2. 计算危险边距 (多圆模型 - 车身表面到障碍物最小距离)
             if obstacles:
+                sin_nth = math.sin(nth)
+                cos_nth = math.cos(nth)
                 for obs in obstacles:
                     ox, oy, ow, oh = obs['x'], obs['y'], obs['w'], obs['h']
                     min_x, max_x = min(ox, ox+ow), max(ox, ox+ow)
                     min_y, max_y = min(oy, oy+oh), max(oy, oy+oh)
                     
-                    dx = nx - max_x if nx > max_x else (min_x - nx if nx < min_x else 0.0)
-                    dy = ny - max_y if ny > max_y else (min_y - ny if ny < min_y else 0.0)
-                    dist_sq = dx*dx + dy*dy
-                    if dist_sq < min_margin_sq:
-                        min_margin_sq = dist_sq
+                    for offset in VEHICLE_CHECK_OFFSETS:
+                        px = nx + offset * cos_nth
+                        py = ny + offset * sin_nth
+                        dx = px - max_x if px > max_x else (min_x - px if px < min_x else 0.0)
+                        dy = py - max_y if py > max_y else (min_y - py if py < min_y else 0.0)
+                        dist_sq = dx*dx + dy*dy
+                        if dist_sq < min_margin_sq:
+                            min_margin_sq = dist_sq
 
         result['collision'] = has_collision
-        min_margin = math.sqrt(min_margin_sq) if min_margin_sq < 999.0 else 999.0
+        # min_margin = circle center to AABB edge distance - VEHICLE_HALF_WIDTH = surface clearance
+        if min_margin_sq < 999.0:
+            min_margin = math.sqrt(min_margin_sq) - VEHICLE_HALF_WIDTH
+            if min_margin < 0.0:
+                min_margin = 0.0  # collision already caught above
+        else:
+            min_margin = 999.0
         result['min_margin'] = min_margin
         
-        if min_margin < 0.4 and not has_collision:
+        if min_margin < 0.15 and not has_collision:
             result['dangerous_margin'] = True
             
         # 如果发生碰撞，附带完整参数以便 JSON 导出

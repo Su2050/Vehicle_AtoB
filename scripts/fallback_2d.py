@@ -492,10 +492,14 @@ def plan_2d_fallback(dijkstra_grid, start_x, start_y, start_th,
 
     if obstacles:
         candidate_cfgs = [
-            # Prefer narrower hard inflation to avoid excessive detours.
-            (0.25, MIN_TURN_RADIUS * 0.9),
-            (0.22, MIN_TURN_RADIUS * 0.8),
-            (0.30, MIN_TURN_RADIUS * 1.0),
+            # Multi-circle model needs lateral clearance ≈ VEHICLE_HALF_WIDTH (0.25m).
+            # Use moderate inflate (0.30–0.55m) so 2D paths stay passable through
+            # narrow gaps (e.g. S11 gap=1.5m: 1.5 - 2×0.30 = 0.9m free), while
+            # RS stitching collision check handles fine-grained body clearance.
+            # Previous values (0.80/0.55/0.40) were too aggressive — blocked S11 entirely.
+            (0.30, MIN_TURN_RADIUS * 0.9),
+            (0.40, MIN_TURN_RADIUS * 1.0),
+            (0.55, MIN_TURN_RADIUS * 1.3),
         ]
         for inf_r, soft_r in candidate_cfgs:
             if deadline is not None and time.perf_counter() > deadline:
@@ -518,7 +522,7 @@ def plan_2d_fallback(dijkstra_grid, start_x, start_y, start_th,
                     continue
                 pull_path = _dijkstra_2d_path(
                     px, py, RS_GOAL_X, RS_GOAL_Y, obstacles,
-                    inflate_radius=0.22, soft_radius=MIN_TURN_RADIUS * 0.8)
+                    inflate_radius=0.32, soft_radius=MIN_TURN_RADIUS * 0.9)
                 if len(pull_path) >= 2:
                     candidates.append([(start_x, start_y)] + pull_path)
 
@@ -574,7 +578,7 @@ def plan_2d_fallback(dijkstra_grid, start_x, start_y, start_th,
         candidates2 = []
         alt2 = _dijkstra_2d_path(
             start_x, start_y, RS_GOAL_X, RS_GOAL_Y, obstacles,
-            inflate_radius=0.18, soft_radius=MIN_TURN_RADIUS * 0.7)
+            inflate_radius=0.25, soft_radius=MIN_TURN_RADIUS * 0.7)
         if len(alt2) >= 2:
             candidates2.append(alt2)
 

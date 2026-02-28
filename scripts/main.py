@@ -70,8 +70,8 @@ def plan_path(x0, y0, theta0, precomp_prim,
 
     fast_obs = _prep_obs(obstacles) if obstacles else None
 
-    def _collision_fn(nx, ny, nth, sin_nth=None):
-        return check_collision(nx, ny, nth, sin_nth,
+    def _collision_fn(nx, ny, nth, sin_nth=None, cos_nth=None):
+        return check_collision(nx, ny, nth, sin_nth, cos_nth=cos_nth,
                                no_corridor=no_corridor, obstacles=fast_obs)
 
     if _heuristic_preapproach:

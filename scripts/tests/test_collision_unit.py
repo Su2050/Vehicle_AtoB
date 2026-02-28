@@ -8,30 +8,35 @@ def test_valid_position_no_obstacle():
     assert reason == 'OK'
 
 def test_corridor_y_boundary():
-    """y=4.0 超出 [-3.5, 3.5]，应返回 (False, 'OBSTACLE') (全局边界)"""
-    ok, reason = check_collision(3.0, 4.0, 0.0)
+    """y=6.0 超出 MAX_PLANNABLE_Y(5.0)，应返回 (False, 'OBSTACLE') (全局边界)"""
+    ok, reason = check_collision(3.0, 6.0, 0.0)
     assert ok is False
     assert reason == 'OBSTACLE'
 
 def test_global_boundary_hard_gate():
-    """ny=-4.0 即使 no_corridor=True，也必须返回 False
+    """ny=-6.0 即使 no_corridor=True，也必须返回 False
     这验证全局物理边界在 no_corridor 条件之外"""
-    ok, reason = check_collision(3.0, -4.0, 0.0, no_corridor=True)
+    ok, reason = check_collision(3.0, -6.0, 0.0, no_corridor=True)
     assert ok is False
     assert reason == 'OBSTACLE'
 
 def test_obstacle_collision():
-    """叉车在障碍物半径 0.5m 内，应返回 (False, 'OBSTACLE')"""
-    obs = [{'x': 3.0, 'y': 0.0, 'w': 1.0, 'h': 1.0}] # min_x=3, max_x=4, min_y=0, max_y=1
-    # 叉车在 2.6, 0.5，到 (3.0, 0.5) 距离 0.4 < 0.5
+    """多圆模型：车身后端圆覆盖到障碍物内部，应返回 (False, 'OBSTACLE')
+    障碍物: x∈[3,4], y∈[0,1]
+    叉车在 (2.6, 0.5, 0.0)，th=0 → rear circle at (3.1, 0.5) 在障碍物内部"""
+    obs = [{'x': 3.0, 'y': 0.0, 'w': 1.0, 'h': 1.0}]
     ok, reason = check_collision(2.6, 0.5, 0.0, obstacles=obs)
     assert ok is False
     assert reason == 'OBSTACLE'
 
 def test_obstacle_edge_safe():
-    """叉车在障碍物 0.6m 外（>0.5m 半径），应返回 (True, 'OK')"""
+    """多圆模型：所有碰撞圆与障碍物距离均 > HALF_WIDTH(0.25m)，应返回 (True, 'OK')
+    障碍物: x∈[3,4], y∈[0,1]
+    叉车在 (2.2, 0.5, 0.0)，th=0 → 最近圆心 (2.7, 0.5)
+    距离: dx=3.0-2.7=0.3 > 0.25 → safe
+    (使用 x=2.2 避开走廊安全约束 nx<=2.05)"""
     obs = [{'x': 3.0, 'y': 0.0, 'w': 1.0, 'h': 1.0}]
-    ok, reason = check_collision(2.4, 0.5, 0.0, obstacles=obs) # dist = 0.6
+    ok, reason = check_collision(2.2, 0.5, 0.0, obstacles=obs)
     assert ok is True
     assert reason == 'OK'
 
@@ -61,20 +66,52 @@ def test_check_traj_collision_mid_collision():
     assert _check_traj_collision(traj, obstacles=obs) is False
 
 def test_multiple_obstacles():
-    """多个障碍物场景，靠近任一均应碰撞"""
+    """多个障碍物场景，多圆模型碰撞检测"""
     obs = [
         {'x': 3.0, 'y': 0.0, 'w': 1.0, 'h': 1.0},
         {'x': 5.0, 'y': 2.0, 'w': 1.0, 'h': 1.0}
     ]
-    # collide with first
+    # 车身后端圆 (3.1, 0.5) 在 obs1 内部 → collision
     ok, _ = check_collision(2.6, 0.5, 0.0, obstacles=obs)
     assert ok is False
-    # collide with second
+    # 车身后端圆 (5.1, 2.5) 在 obs2 内部 → collision
     ok, _ = check_collision(4.6, 2.5, 0.0, obstacles=obs)
     assert ok is False
-    # safe
-    ok, _ = check_collision(4.6, 1.0, 0.0, obstacles=obs)
+    # 所有碰撞圆均远离两个障碍物 → safe
+    ok, _ = check_collision(4.6, 1.5, 0.0, obstacles=obs)
     assert ok is True
+
+def test_multi_circle_front_collision():
+    """多圆模型：前端碰撞圆（叉齿方向）检测碰撞
+    障碍物: x∈[1.0,2.0], y∈[-0.5,0.5]
+    叉车在 (3.5, 0.0, 0.0)，th=0 → 前端圆 offset=-1.87 at (1.63, 0.0)
+    1.63 在 [1.0, 2.0] 内，距离=0 < 0.25 → collision"""
+    obs = [{'x': 1.0, 'y': -0.5, 'w': 1.0, 'h': 1.0}]
+    ok, reason = check_collision(3.5, 0.0, 0.0, obstacles=obs)
+    assert ok is False
+    assert reason == 'OBSTACLE'
+
+def test_multi_circle_angled():
+    """多圆模型：斜向角度时碰撞检测
+    叉车在 (4.0, 0.0, pi/2)，th=pi/2 → cos=0, sin=1
+    车身沿 y 方向展开：circles at (4.0, offset) for each offset
+    障碍物: x∈[3.5,4.5], y∈[2.0,3.0]
+    前端圆 offset=-1.87 at (4.0, -1.87) → safe
+    后端圆 offset=0.5 at (4.0, 0.5) → safe"""
+    obs = [{'x': 3.5, 'y': 2.0, 'w': 1.0, 'h': 1.0}]
+    ok, reason = check_collision(4.0, 0.0, math.pi / 2, obstacles=obs)
+    assert ok is True
+    assert reason == 'OK'
+
+def test_quick_rejection():
+    """快速排斥：远离障碍物时不需要逐圆检查
+    叉车在 (5.0, 0.0)，障碍物在 (8.0, 3.0)
+    距离 > VEHICLE_MAX_RADIUS(2.12) → 快速跳过"""
+    obs = [{'x': 8.0, 'y': 3.0, 'w': 1.0, 'h': 1.0}]
+    ok, reason = check_collision(5.0, 0.0, 0.0, obstacles=obs)
+    assert ok is True
+    assert reason == 'OK'
+
 
 if __name__ == "__main__":
     test_valid_position_no_obstacle()
@@ -87,4 +124,7 @@ if __name__ == "__main__":
     test_check_traj_collision_all_pass()
     test_check_traj_collision_mid_collision()
     test_multiple_obstacles()
+    test_multi_circle_front_collision()
+    test_multi_circle_angled()
+    test_quick_rejection()
     print("All collision tests passed!")

@@ -59,8 +59,8 @@ def _preprocess_obstacles(obstacles):
 
 
 def _make_collision_fn(no_corridor, fast_obstacles):
-    def collision_fn(nx, ny, nth, sin_nth=None):
-        return check_collision(nx, ny, nth, sin_nth,
+    def collision_fn(nx, ny, nth, sin_nth=None, cos_nth=None):
+        return check_collision(nx, ny, nth, sin_nth, cos_nth,
                                no_corridor=no_corridor,
                                obstacles=fast_obstacles)
     return collision_fn

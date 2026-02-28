@@ -12,7 +12,7 @@ class DijkstraGrid:
         self.goal_y = goal_y
         
         # Grid boundaries based on workspace limits
-        self.min_x, self.max_x = -1.0, 10.0
+        self.min_x, self.max_x = -1.0, 12.0
         self.min_y, self.max_y = -6.0, 6.0
         
         self.nx = int((self.max_x - self.min_x) / self.res)
@@ -35,36 +35,56 @@ class DijkstraGrid:
     def build_map(self, obstacles, start_x=None, start_y=None):
         # Initialize grid
         self.obs_map = [[False] * self.ny for _ in range(self.nx)]
+        self.real_obs_map = [[False] * self.ny for _ in range(self.nx)]
         self.dist_map = [[float('inf')] * self.ny for _ in range(self.nx)]
         self.cost_map = [[1.0] * self.ny for _ in range(self.nx)]
         
         inf_cells = int(math.ceil(self.inflate_radius / self.res))
         soft_inf_cells = int(math.ceil(max(self.inflate_radius * 2.0, 0.5) / self.res))
         
-        if obstacles:
-            for obs in obstacles:
-                if isinstance(obs, tuple):
-                    min_wx, max_wx, min_wy, max_wy = obs
-                else:
-                    ox, oy, ow, oh = obs['x'], obs['y'], obs['w'], obs['h']
-                    min_wx = min(ox, ox + ow)
-                    max_wx = max(ox, ox + ow)
-                    min_wy = min(oy, oy + oh)
-                    max_wy = max(oy, oy + oh)
-                
-                gx_min, gy_min = self._world_to_grid(min_wx, min_wy)
-                gx_max, gy_max = self._world_to_grid(max_wx, max_wy)
-                
-                # Apply hard inflation
-                hx_min = max(0, gx_min - inf_cells)
-                hy_min = max(0, gy_min - inf_cells)
-                hx_max = min(self.nx - 1, gx_max + inf_cells)
-                hy_max = min(self.ny - 1, gy_max + inf_cells)
-                
-                for x in range(hx_min, hx_max + 1):
-                    for y in range(hy_min, hy_max + 1):
-                        if 0 <= x < self.nx and 0 <= y < self.ny:
-                            self.obs_map[x][y] = True
+        # Add MAX_PLANNABLE_Y and X boundaries as obstacles
+        from primitives import MAX_PLANNABLE_Y
+        boundary_obs = [
+            (-1.0, 12.0, MAX_PLANNABLE_Y, 6.0),
+            (-1.0, 12.0, -6.0, -MAX_PLANNABLE_Y),
+            (-1.0, 0.0, -6.0, 6.0),
+            (11.0, 12.0, -6.0, 6.0)
+        ]
+        
+        all_obstacles = list(obstacles) if obstacles else []
+        all_obstacles.extend(boundary_obs)
+        print("DEBUG: len(all_obstacles) =", len(all_obstacles))
+        
+        for obs in all_obstacles:
+            if isinstance(obs, tuple):
+                min_wx, max_wx, min_wy, max_wy = obs
+            else:
+                ox, oy, ow, oh = obs['x'], obs['y'], obs['w'], obs['h']
+                min_wx = min(ox, ox + ow)
+                max_wx = max(ox, ox + ow)
+                min_wy = min(oy, oy + oh)
+                max_wy = max(oy, oy + oh)
+            gx_min, gy_min = self._world_to_grid(min_wx, min_wy)
+            gx_max, gy_max = self._world_to_grid(max_wx, max_wy)
+            
+            # Mark real obstacles
+            rx_min = max(0, gx_min)
+            ry_min = max(0, gy_min)
+            rx_max = min(self.nx - 1, gx_max)
+            ry_max = min(self.ny - 1, gy_max)
+            for x in range(rx_min, rx_max + 1):
+                for y in range(ry_min, ry_max + 1):
+                    self.real_obs_map[x][y] = True
+            
+            # Apply hard inflation
+            hx_min = max(0, gx_min - inf_cells)
+            hy_min = max(0, gy_min - inf_cells)
+            hx_max = min(self.nx - 1, gx_max + inf_cells)
+            hy_max = min(self.ny - 1, gy_max + inf_cells)
+            
+            for x in range(hx_min, hx_max + 1):
+                for y in range(hy_min, hy_max + 1):
+                    self.obs_map[x][y] = True
 
                 # Apply soft inflation (cost map)
                 sx_min = max(0, gx_min - soft_inf_cells)
@@ -137,29 +157,9 @@ class DijkstraGrid:
                             self.dist_map[nx][ny] = new_d
                             heapq.heappush(q, (new_d, nx, ny))
                             
-        # Fill inflated-obstacle cells with interpolated distance estimates.
-        # This is critical: A* collision uses VEHICLE_RADIUS=0.1m but the
-        # Dijkstra grid uses larger inflation (0.25m+). Positions inside the
-        # inflated zone but outside the real obstacle are reachable by A*, so
-        # they need reasonable heuristic values instead of inf/1000.
-        search_r = max(inf_cells + 2, 3)
-        for gx in range(self.nx):
-            for gy in range(self.ny):
-                if self.obs_map[gx][gy] and self.dist_map[gx][gy] == float('inf'):
-                    best_d = float('inf')
-                    for ddx in range(-search_r, search_r + 1):
-                        for ddy in range(-search_r, search_r + 1):
-                            nx2, ny2 = gx + ddx, gy + ddy
-                            if 0 <= nx2 < self.nx and 0 <= ny2 < self.ny:
-                                if not self.obs_map[nx2][ny2]:
-                                    cd = self.dist_map[nx2][ny2]
-                                    if cd < float('inf'):
-                                        step_d = math.hypot(ddx, ddy) * self.res
-                                        total = cd + step_d + 0.3
-                                        if total < best_d:
-                                            best_d = total
-                    if best_d < float('inf'):
-                        self.dist_map[gx][gy] = best_d
+        # Interpolation removed: with multi-circle collision model (radius 0.25m),
+        # the center cannot enter the 0.25m inflated zone anyway.
+        # This prevents DijkstraGrid from "bridging" narrow gaps that are actually impassable.
 
         # Precompute gradient angle map
         self.angle_map = [[None for _ in range(self.ny)] for _ in range(self.nx)]
@@ -211,6 +211,14 @@ class DijkstraGrid:
                 euc = math.hypot(wx - self.goal_x, wy - self.goal_y)
                 big = max(euc * 3.0, 50.0)
                 return big, big
+                
+            # Penalize approaching the goal from the side without enough x distance
+            if dist < 8.0:
+                dy = abs(wy - self.goal_y)
+                dx = abs(wx - self.goal_x)
+                if dy > 0.5 and dx < dy * 1.5:
+                    pure_dist += (dy * 1.5 - dx) * 2.0
+                    
             # Apply heading alignment penalty near goal
             if wth is not None and dist < 5.0:
                 goal_th = 0.0 
@@ -277,17 +285,19 @@ def rs_grid_heuristic(nx, ny, nth, dijkstra_grid):
         h = max(h_rs, h_grid * 1.2)
     else:
         h = max(h_rs, h_grid * 1.5)
-        
-    # 补充非完整约束揉库预估惩罚
-    dy_err = abs(ny - RS_GOAL_Y)
-    dx_err = nx - max(RS_GOAL_X, 2.0)
-    th_err = abs(nth - RS_GOAL_TH)
-    if (dy_err > 0.5 or th_err > 0.2) and dx_err > 0.0:
-        needed_x = dy_err * 2.0 + th_err * 1.5
+
+    # Continuous K-turn penalty (added to final h)
+    dx_err = nx - RS_GOAL_X
+    dy_err = abs(ny - RS_GOAL_Y) / 5.0
+    abs_nth = abs(nth)
+    if (dy_err > 0.1 or abs_nth > 0.2):
+        needed_x = dy_err * 7.5 + abs_nth * 1.5
         if dx_err < needed_x:
-            kturn_est = min(50.0, (needed_x - dx_err) * 10.0)
-            h += kturn_est
-    
+            if dx_err < 0.0:
+                h += (needed_x - dx_err) * 10.0 + (-dx_err) * 20.0
+            else:
+                h += (needed_x - dx_err) * 10.0
+
     h_weight = 2.5
     return h, h_weight
 
@@ -304,13 +314,16 @@ def preapproach_heuristic(nx, ny, nth, goal_xmin, goal_xmax, goal_ymin, goal_yma
             h_y *= 0.2
     
     dy_err = h_y / 5.0
-    dx_err = nx - goal_xmin
+    dx_err = nx - goal_xmax
     kturn_est = 0.0
     needed_x = 0.0
-    if (dy_err > 0.5 or abs_nth > goal_thmax + 0.2) and dx_err > 0.0:
-        needed_x = dy_err * 2.0 + abs_nth * 1.5
+    if (dy_err > 0.1 or abs_nth > goal_thmax + 0.2):
+        needed_x = dy_err * 7.5 + abs_nth * 1.5
         if dx_err < needed_x:
-            kturn_est = (needed_x - dx_err) * 10.0
+            if dx_err < 0.0:
+                kturn_est = (needed_x - dx_err) * 10.0 + (-dx_err) * 20.0
+            else:
+                kturn_est = (needed_x - dx_err) * 10.0
             
     dyn_xmax = max(goal_xmax if abs_nth <= goal_thmax + 0.2 else max(goal_xmax, 4.0), goal_xmin + needed_x)
     h_x = max(0.0, goal_xmin - nx) * 3.0

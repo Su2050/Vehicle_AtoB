@@ -87,13 +87,20 @@ def _make_rs_expand_fn_multi(collision_fn, rs_expansion_radius, max_paths=8,
 
 def _generate_bypass_milestones(sx, sy, sth, obstacles, clearance=1.0):
     """
-    Generate a sparse grid of candidate waypoint poses around each obstacle.
-    Focuses on lateral offsets large enough for RS turning radius (~2.1m).
-    Reduced for speed - fewer waypoints to check.
+    Generate candidate waypoint poses around each obstacle for L1.5 bypass.
+
+    Exp-6B enhancements over original:
+      - Goal-side x positions (min_x - 0.5, min_x - 1.0) for S03/S11 scenarios
+        where the vehicle must route around the obstacle toward the goal.
+      - Heading variants pointing toward goal for each milestone position,
+        enabling RS connections that the default th=0 cannot achieve.
+      - Wider y offsets (1.0, 1.5, 2.0, 2.5) and raised y limit (4.5)
+        to cover more detour geometries.
     """
-    milestones = []
+    milestones_primary = []   # th=0 milestones (most likely to succeed)
+    milestones_heading = []   # heading-variant milestones (backup)
     if not obstacles:
-        return milestones
+        return milestones_primary
 
     for obs in obstacles:
         if isinstance(obs, dict):
@@ -106,22 +113,30 @@ def _generate_bypass_milestones(sx, sy, sth, obstacles, clearance=1.0):
             continue
 
         mid_x = (min_x + max_x) * 0.5
-        # Reduced x_vals for speed
+        # Start-side x positions (past obstacle from start direction)
         x_vals = [max_x + 0.5, max_x + 1.0, mid_x]
+        # Goal-side x positions (between obstacle and goal)
+        x_vals += [min_x - 0.5, min_x - 1.0]
         x_vals = [x for x in x_vals if 0.5 < x < 8.5]
 
         for y_sign in [1.0, -1.0]:
             edge_y = max_y if y_sign > 0 else min_y
-            # Reduced y_offsets for speed
-            y_offsets = [1.2, 2.0]
+            y_offsets = [1.0, 1.5, 2.0, 2.5]
             for y_off in y_offsets:
                 wp_y = edge_y + y_sign * y_off
-                if abs(wp_y) > 3.0:
+                if abs(wp_y) > 4.5:
                     continue
                 for wp_x in x_vals:
-                    milestones.append((wp_x, wp_y, 0.0, 'grid'))
+                    # Heading 0 first (parallel to goal direction, most useful)
+                    milestones_primary.append((wp_x, wp_y, 0.0, 'grid'))
+                    # Heading variant pointing toward goal (backup, tried later)
+                    th_to_goal = math.atan2(RS_GOAL_Y - wp_y, RS_GOAL_X - wp_x)
+                    if abs(th_to_goal) > 0.2:
+                        milestones_heading.append((wp_x, wp_y, th_to_goal, 'grid_h'))
 
-    return milestones
+    # Exp-7: th=0 milestones first — they're simpler RS paths and more
+    # likely to succeed.  Heading variants are appended as backup.
+    return milestones_primary + milestones_heading
 
 
 def _check_traj_collision(traj, collision_fn):
@@ -229,9 +244,20 @@ def _check_l18_quality(start_x, start_y, start_th, acts, rs_traj, precomp_prim):
     return True, "ok"
 
 
-def _path_is_unreasonable(traj, sx, sy):
+def _path_is_unreasonable(traj, sx, sy,
+                          max_ratio=_PATH_LENGTH_RATIO_MAX,
+                          max_lat_extra=_PATH_LATERAL_EXTRA_MAX):
     """Reject paths with excessive length or lateral deviation.
     Catches L1/L1.5 arcs that technically avoid the wall but detour wildly.
+
+    Parameters
+    ----------
+    max_ratio : float
+        Maximum allowed trajectory-length / direct-distance ratio.
+        Default 3.0 for L1/RS-expansion; use 5.0 for L1.5 detour paths.
+    max_lat_extra : float
+        Maximum extra lateral deviation beyond start/goal y.
+        Default 2.0 for L1; use 3.0 for L1.5 where lateral detour is expected.
     """
     if not traj or len(traj) < 3:
         return False
@@ -246,9 +272,9 @@ def _path_is_unreasonable(traj, sx, sy):
         ay = abs(traj[i][1])
         if ay > max_abs_y:
             max_abs_y = ay
-    if traj_len > eff_direct * _PATH_LENGTH_RATIO_MAX:
+    if traj_len > eff_direct * max_ratio:
         return True
-    y_bound = max(abs(sy), abs(RS_GOAL_Y)) + _PATH_LATERAL_EXTRA_MAX
+    y_bound = max(abs(sy), abs(RS_GOAL_Y)) + max_lat_extra
     if max_abs_y > y_bound:
         return True
     return False
@@ -303,6 +329,11 @@ def _try_milestone_rs_bypass(sx, sy, sth, obstacles, collision_fn,
                 if total_len < best_len:
                     best_len = total_len
                     best_traj = seg1 + seg2
+                    # Exp-7: Return first viable 2-seg path immediately.
+                    # Critical fix: without early exit, the exhaustive search
+                    # across 30+ milestones causes deadline timeout, which
+                    # then DISCARDS best_traj via `return False, None`.
+                    return True, best_traj
 
     if best_traj is not None:
         return True, best_traj
@@ -349,6 +380,8 @@ def _try_milestone_rs_bypass(sx, sy, sth, obstacles, collision_fn,
                     if total_len < best_len:
                         best_len = total_len
                         best_traj = seg1_ok[0] + seg2 + seg3
+                        # Exp-7: Early exit for 3-seg path too
+                        return True, best_traj
 
     if best_traj is not None:
         return True, best_traj
@@ -507,13 +540,16 @@ def _phase0_turnaround(mx, my, mth, precomp_prim, no_corridor, fast_obstacles):
 def plan_path_robust_obs_v2(x0, y0, theta0, precomp_prim,
                              use_rs=True, stats=None, no_corridor=False,
                              rs_expansion_radius=2.5, obstacles=None,
-                             _time_budget=25.0):
+                             _time_budget=28.0):
     """
     Enhanced obstacle planner v2 with multi-stage recovery.
     Drop-in replacement for plan_path_robust_obs.
 
     _time_budget: total wall-clock seconds before the planner gives up.
-                  Default 25s leaves a 5s margin under a typical 30s test timeout.
+                  Default 28s leaves a 2s margin under a typical 30s test timeout.
+                  Exp-8: increased from 25s to give A* more time, since L1.5/L1.8
+                  RS-based stages are provably infeasible for multi-circle model
+                  near tight obstacles.
     """
     t_robust = time.perf_counter()
     planner_deadline = t_robust + _time_budget
@@ -533,10 +569,14 @@ def plan_path_robust_obs_v2(x0, y0, theta0, precomp_prim,
                      level='FAILED_goal_blocked')
         return False, None, None
 
-    # Use inflate_radius=0.25 (close to VEHICLE_RADIUS=0.1) so Dijkstra
-    # heuristic matches actual collision feasibility. The old 0.7m inflation
-    # blocked valid detour paths, causing A* to waste its expansion budget.
-    dijkstra_grid = DijkstraGrid(RS_GOAL_X, RS_GOAL_Y, inflate_radius=0.25)
+    # Exp-10: Reduced inflate_radius from 0.50 → 0.30.
+    # With grid_res=0.15, inflate=0.50 gives inf_cells=4 (0.60m hard-blocked zone),
+    # which over-inflates obstacles in the heuristic — diagnostic shows A* gets
+    # stuck near the start because the soft-cost zone (1.0m) creates heuristic
+    # bottlenecks.  inflate=0.30 gives inf_cells=2 (0.30m), still > VEHICLE_HALF_WIDTH
+    # (0.25m), but the Dijkstra detour_ratio for S11 drops 1.73→1.41 (-18%).
+    # The actual multi-circle collision check still ensures physical safety.
+    dijkstra_grid = DijkstraGrid(RS_GOAL_X, RS_GOAL_Y, inflate_radius=0.30)
     dijkstra_grid.build_map(obstacles, start_x=x0, start_y=y0)
     _, start_d_goal = dijkstra_grid.get_heuristic(x0, y0)
 
@@ -558,17 +598,25 @@ def plan_path_robust_obs_v2(x0, y0, theta0, precomp_prim,
             stats['level'] = 'L1_pure_rs'
             return True, acts, traj
 
-    # ── Level-1.5: Milestone RS bypass (skip for simple obstacles to save time) ──
-    # Only run milestone bypass if we have complex obstacles (>1) or tight space
-    run_milestone_bypass = use_rs and obstacles and len(obstacles) > 1
+    # ── Level-1.5: Milestone RS bypass ──
+    # Enable for ALL obstacle cases — single obstacles (S02/S03) also benefit
+    # from milestone-based RS detour, which is fast (~3s budget) and avoids
+    # expensive A* search entirely.
+    # Exp-8: Reduced L1.5 budget from 3s→1s.  Diagnostic shows seg2
+    #         (milestone→goal) has 0 collision-free RS paths for all 11 timeout
+    #         cases — the multi-circle tail sweep makes milestone→goal RS
+    #         geometrically infeasible near obstacles.  L1.5 fails fast (<1.5s),
+    #         so 1s is sufficient while preserving budget for A*.
+    run_milestone_bypass = use_rs and bool(obstacles)
     if run_milestone_bypass:
-        l15_deadline = min(time.perf_counter() + 2.0, planner_deadline)
+        l15_deadline = min(time.perf_counter() + 1.0, planner_deadline)
         bypass_ok, bypass_traj = _try_milestone_rs_bypass(
             x0, y0, theta0, obstacles, coll_fn,
             fast_obstacles=fast_obstacles, no_corridor=no_corridor,
-            max_paths=8, max_milestones=15, deadline=l15_deadline)
+            max_paths=8, max_milestones=30, deadline=l15_deadline)
         if bypass_ok and not _path_goes_behind_wall(bypass_traj) \
-                and not _path_is_unreasonable(bypass_traj, x0, y0):
+                and not _path_is_unreasonable(bypass_traj, x0, y0,
+                                              max_ratio=5.0, max_lat_extra=3.0):
             total_ms = round((time.perf_counter() - t_robust) * 1000.0, 1)
             stats.update(
                 expanded=0, elapsed_ms=total_ms,
@@ -641,11 +689,13 @@ def plan_path_robust_obs_v2(x0, y0, theta0, precomp_prim,
     _l18_any_spc = None
     _l18_any_len = float('inf')
     if run_2d_skeleton:
-        # Dynamic L1.8 budget: use up to 60% of remaining time (max 15s),
-        # ensuring at least ~40% remains for A* multi-stage recovery.
+        # Exp-8: Reduced L1.8 budget from 30%/8s → 20%/5s.
+        # Diagnostic shows RS stitching fails for 10/11 timeout cases and
+        # takes 40-60s when it does succeed — most budget is wasted.
+        # Keep min=2s so L1.8 can still solve easy detours quickly.
         _remaining = planner_deadline - time.perf_counter()
-        _l18_budget = min(_remaining * 0.6, 15.0)
-        l18_deadline = time.perf_counter() + max(_l18_budget, 3.0)
+        _l18_budget = min(_remaining * 0.2, 5.0)
+        l18_deadline = time.perf_counter() + max(_l18_budget, 2.0)
         coll_relaxed = coll_fn
         if prefix_too_many_shifts:
             # K-turn prefix is too long; skip it, only try from original position
@@ -709,9 +759,10 @@ def plan_path_robust_obs_v2(x0, y0, theta0, precomp_prim,
     _, mid_d_goal = dijkstra_grid.get_heuristic(mx, my)
     total_expanded = 0  # accumulate across all A* stages for diagnostics
 
-    # Exp-5a: Tighter per-stage time allocation so all 3 stages fit within
-    # the remaining budget after L1.8. Previously [5, 10, 20] was too generous.
-    STAGE_TIME_BUDGETS = [3.0, 5.0, 8.0]  # fast, robust, aggressive
+    # Exp-8: Increased A* budgets from [5,8,15] → [6,10,18].
+    # Total A* budget now 34s (vs prev 28s).  Combined with reduced L1.5 (1s)
+    # and L1.8 (≤5s), A* gets ~22-25s of real wall-clock time.
+    STAGE_TIME_BUDGETS = [6.0, 10.0, 18.0]  # fast, robust, aggressive
 
     if not prefix_too_many_shifts:
         for stage_idx, stage in enumerate(RECOVERY_STAGES):

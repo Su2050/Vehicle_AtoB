@@ -21,7 +21,7 @@ def plan_path(x0, y0, theta0, precomp_prim,
     通过回调注入碰撞检测和启发式，引擎内部不直接依赖外部环境参数。
 
     参数:
-        collision_fn(nx, ny, nth, sin_nth) -> (is_valid, reason)
+        collision_fn(nx, ny, nth, sin_nth, cos_nth) -> (is_valid, reason)
         heuristic_fn(nx, ny, nth) -> (h, h_weight)
         rs_expand_fn(cx, cy, cth, cost, path_node, expanded, t_start, stats) -> (success, actions, rs_traj) or None
         stats: 可选字典
@@ -93,6 +93,7 @@ def plan_path(x0, y0, theta0, precomp_prim,
             step_hit = 0
 
             nx = ny = nth = 0.0
+            last_i = N - 1  # index of final step in trajectory
 
             for i, (dx, dy, dth, cdth, sdth) in enumerate(traj):
                 nx = cx + dx * cos_th - dy * sin_th
@@ -102,12 +103,19 @@ def plan_path(x0, y0, theta0, precomp_prim,
                 if nth > M_PI: nth -= PI2
                 elif nth <= -M_PI: nth += PI2
 
-                sin_nth = sin_th * cdth + cos_th * sdth
+                # Exp-9: Stride-5 collision check.  Each step is ~8mm apart,
+                # so stride-5 = ~40mm gap.  The smallest collision circle
+                # radius is 250mm, so consecutive circles overlap by ≥210mm
+                # — no obstacle can slip through the gap.  ~67% fewer checks
+                # vs every-step, ~40% fewer vs stride-3.
+                if i == 0 or i == last_i or i % 5 == 0:
+                    sin_nth = sin_th * cdth + cos_th * sdth
+                    cos_nth = cos_th * cdth - sin_th * sdth
 
-                is_valid, _ = collision_fn(nx, ny, nth, sin_nth)
-                if not is_valid:
-                    ok = False
-                    break
+                    is_valid, _ = collision_fn(nx, ny, nth, sin_nth, cos_nth)
+                    if not is_valid:
+                        ok = False
+                        break
 
                 if _goal_xmin <= nx <= _goal_xmax and _goal_ymin <= ny <= _goal_ymax and abs(nth) <= _goal_thmax:
                     hit_goal = True
