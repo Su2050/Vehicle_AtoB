@@ -1,6 +1,7 @@
 import math
 import time
 import rs
+import primitives
 from primitives import (
     DT, M_PI, PI2, ALIGN_GOAL_DYAW, MIN_TURN_RADIUS,
     RS_GOAL_X, RS_GOAL_Y, RS_GOAL_TH,

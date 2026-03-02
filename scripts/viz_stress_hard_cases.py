@@ -27,6 +27,7 @@ sys.path.insert(0, SCRIPT_DIR)
 sys.path.insert(0, os.path.join(SCRIPT_DIR, "tests"))
 
 from test_stress import generate_cases  # noqa: E402
+import primitives  # noqa: E402
 from primitives import (init_primitives, simulate_path,  # noqa: E402
                         RS_GOAL_X, RS_GOAL_Y)
 from planner_obs import _preprocess_obstacles  # noqa: E402
@@ -291,13 +292,27 @@ def _draw_hard_case(ax, case_info, traj_data, show_title=True, compact=False):
             markeredgecolor="#006600", markeredgewidth=1.0, zorder=10,
             label="Start" if not compact else None)
 
-    # ── 碰撞半径圆 (与 collision.py VEHICLE_RADIUS=0.1 一致) ──
-    collision_circle = mpatches.Circle(
-        (sy, sx), 0.1,
-        linewidth=1.2, edgecolor="#00aa00", facecolor="#00cc0030",
-        zorder=9, label="Collision R=0.1m" if not compact else None,
-    )
-    ax.add_patch(collision_circle)
+    # ── 多圆碰撞模型（与 collision.py 一致）──
+    offsets = primitives.VEHICLE_CHECK_OFFSETS
+    half_w = primitives.VEHICLE_HALF_WIDTH
+    cos_th = math.cos(sth)
+    sin_th = math.sin(sth)
+    for i, offset in enumerate(offsets):
+        wx = sx + offset * cos_th
+        wy = sy + offset * sin_th
+        circle = mpatches.Circle(
+            (wy, wx), half_w,
+            linewidth=0.8, edgecolor="#00aa00", facecolor="#00cc00",
+            alpha=0.25, zorder=9,
+            label=f"Vehicle ({len(offsets)}-circle)" if i == 0 and not compact else None,
+        )
+        ax.add_patch(circle)
+    # 车身中心线
+    front_off = min(offsets)
+    rear_off = max(offsets)
+    ax.plot([sy + rear_off * sin_th, sy + front_off * sin_th],
+            [sx + rear_off * cos_th, sx + front_off * cos_th],
+            "-", color="#00aa00", linewidth=1.0, alpha=0.5, zorder=8)
 
     # ── 范围 ──
     all_xs = [sx, RS_GOAL_X, WALL_X_MIN, WALL_X_MAX]
@@ -467,7 +482,14 @@ def main():
     parser.add_argument("--workers", type=int, default=None)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--out-dir", type=str, default=None)
+    parser.add_argument("--vehicle-length", type=float, default=1.5,
+                        help="Vehicle total length in meters (default: 1.5)")
+    parser.add_argument("--vehicle-width", type=float, default=0.5,
+                        help="Vehicle total width in meters (default: 0.5)")
     args = parser.parse_args()
+
+    # 配置车辆碰撞模型
+    primitives.configure_vehicle(args.vehicle_length, args.vehicle_width)
 
     script_dir = os.path.dirname(os.path.abspath(__file__))
     out_dir = (args.out_dir

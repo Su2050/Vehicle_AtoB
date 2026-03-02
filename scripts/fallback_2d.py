@@ -10,6 +10,7 @@ import math
 import heapq
 import time
 import rs
+import primitives
 from primitives import (
     DT, MIN_TURN_RADIUS, ALIGN_GOAL_DYAW,
     RS_GOAL_X, RS_GOAL_Y, RS_GOAL_TH,
@@ -578,7 +579,7 @@ def plan_2d_fallback(dijkstra_grid, start_x, start_y, start_th,
         candidates2 = []
         alt2 = _dijkstra_2d_path(
             start_x, start_y, RS_GOAL_X, RS_GOAL_Y, obstacles,
-            inflate_radius=0.25, soft_radius=MIN_TURN_RADIUS * 0.7)
+            inflate_radius=primitives.VEHICLE_HALF_WIDTH, soft_radius=MIN_TURN_RADIUS * 0.7)
         if len(alt2) >= 2:
             candidates2.append(alt2)
 

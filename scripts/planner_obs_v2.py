@@ -10,6 +10,7 @@ Key improvements over v1 (planner_obs.py):
 import math
 import time
 import rs
+import primitives
 from primitives import (
     DT, M_PI, PI2, ALIGN_GOAL_DYAW, MIN_TURN_RADIUS,
     RS_GOAL_X, RS_GOAL_Y, RS_GOAL_TH,
@@ -576,7 +577,7 @@ def plan_path_robust_obs_v2(x0, y0, theta0, precomp_prim,
     # bottlenecks.  inflate=0.30 gives inf_cells=2 (0.30m), still > VEHICLE_HALF_WIDTH
     # (0.25m), but the Dijkstra detour_ratio for S11 drops 1.73→1.41 (-18%).
     # The actual multi-circle collision check still ensures physical safety.
-    dijkstra_grid = DijkstraGrid(RS_GOAL_X, RS_GOAL_Y, inflate_radius=0.30)
+    dijkstra_grid = DijkstraGrid(RS_GOAL_X, RS_GOAL_Y, inflate_radius=primitives.VEHICLE_HALF_WIDTH + 0.05)
     dijkstra_grid.build_map(obstacles, start_x=x0, start_y=y0)
     _, start_d_goal = dijkstra_grid.get_heuristic(x0, y0)
 

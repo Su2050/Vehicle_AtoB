@@ -1,7 +1,9 @@
 import pygame
 import math
 import sys
+import argparse
 import main
+import primitives
 try:
     from planner_obs_v2 import plan_path_robust_obs_v2 as _plan_v2
     _V2_AVAILABLE = True
@@ -35,8 +37,8 @@ WALL_Y_MAX = 3.0
 GOAL_X_MAX = 2.25
 GOAL_Y_HALF = 0.18
 
-# Fork tip distance from reference point
-FORK_TIP_DIST = 1.87
+# Fork tip distance from reference point (now computed from vehicle config)
+# FORK_TIP_DIST is derived from the frontmost collision circle offset
 
 # UI layout
 CANVAS_LEFT = 70
@@ -703,39 +705,37 @@ class App:
             wy = y + lx * st + ly * ct
             return t.w2s(wx, wy)
 
-        # Body rectangle (compact: 0.35m x 0.4m)
-        bw, bh = 0.18, 0.20  # half-widths
-        body_pts = [
-            local_to_screen(-bw, -bh),
-            local_to_screen(-bw, bh),
-            local_to_screen(bw, bh),
-            local_to_screen(bw, -bh),
-        ]
-        pygame.draw.polygon(self.screen, body_col, body_pts)
-        pygame.draw.polygon(self.screen, (30, 30, 40), body_pts, 2)
+        half_w = primitives.VEHICLE_HALF_WIDTH
+        offsets = primitives.VEHICLE_CHECK_OFFSETS
 
-        # Fork prongs (visual length only; FORK_TIP_DIST is the physics value used in collision)
-        fork_gap = 0.08
-        fork_start = -bw
-        fork_end = -0.45  # visual fork length ~0.45m
+        # ── 绘制多圆碰撞模型（与实际碰撞检测一致）──
+        for offset in offsets:
+            # 圆心世界坐标（forward = -x）
+            cx = x - offset * ct
+            cy = y - offset * st
+            csx, csy = t.w2s(cx, cy)
+            r_px = t.m2px(half_w)
+            # 填充圆
+            surf = pygame.Surface((r_px * 2, r_px * 2), pygame.SRCALPHA)
+            col_a = (*body_col, 60)
+            pygame.draw.circle(surf, col_a, (r_px, r_px), r_px)
+            self.screen.blit(surf, (csx - r_px, csy - r_px))
+            # 圆边框
+            pygame.draw.circle(self.screen, body_col, (csx, csy), r_px, 2)
 
-        for sign in (-1, 1):
-            p1 = local_to_screen(fork_start, sign * fork_gap)
-            p2 = local_to_screen(fork_end, sign * fork_gap)
-            pygame.draw.line(self.screen, COL_FORK, p1, p2, 3)
+        # ── 车身中心线（最后→最前）──
+        rear_offset = max(offsets)
+        front_offset = min(offsets)
+        rear_wx = x - rear_offset * ct
+        rear_wy = y - rear_offset * st
+        front_wx = x - front_offset * ct
+        front_wy = y - front_offset * st
+        pygame.draw.line(self.screen, body_col,
+                         t.w2s(rear_wx, rear_wy), t.w2s(front_wx, front_wy), 2)
 
-        # Fork tip crossbar (visual)
-        tip_l = local_to_screen(fork_end, -fork_gap)
-        tip_r = local_to_screen(fork_end, fork_gap)
-        pygame.draw.line(self.screen, COL_FORK_TIP, tip_l, tip_r, 3)
-
-        # True physics fork tip marker (1.87m from ref, used in collision check)
-        tip_wx = x - FORK_TIP_DIST * ct
-        tip_wy = y - FORK_TIP_DIST * st
-        tip_sx, tip_sy = t.w2s(tip_wx, tip_wy)
-        pygame.draw.circle(self.screen, COL_FORK_TIP, (tip_sx, tip_sy), 3)
-        pygame.draw.line(self.screen, COL_FORK_TIP,
-                         local_to_screen(fork_end, 0), (tip_sx, tip_sy), 1)
+        # ── 叉齿标记（最前方圆心处）──
+        fork_sx, fork_sy = t.w2s(front_wx, front_wy)
+        pygame.draw.circle(self.screen, COL_FORK_TIP, (fork_sx, fork_sy), 4)
 
         # Reference point
         ref_sx, ref_sy = t.w2s(x, y)
@@ -826,4 +826,18 @@ class App:
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Forklift Path Planning Visualizer")
+    parser.add_argument("--vehicle-length", type=float, default=1.5,
+                        help="Vehicle total length in meters (default: 1.5)")
+    parser.add_argument("--vehicle-width", type=float, default=0.5,
+                        help="Vehicle total width in meters (default: 0.5)")
+    args = parser.parse_args()
+
+    # 根据用户参数配置车辆碰撞模型
+    primitives.configure_vehicle(args.vehicle_length, args.vehicle_width)
+    print(f"Vehicle config: {args.vehicle_length}m x {args.vehicle_width}m "
+          f"-> {len(primitives.VEHICLE_CHECK_OFFSETS)} circles, "
+          f"r={primitives.VEHICLE_HALF_WIDTH:.2f}m, "
+          f"offsets={primitives.VEHICLE_CHECK_OFFSETS}")
+
     App().run()

@@ -36,13 +36,64 @@ TWO_STAGE_TH_THRESH = 0.7  # rad ≈ 40°
 MAX_PLANNABLE_Y = 5.0  # 放开限制（足以覆盖 y=2.47m 等极端侧偏）
 
 # === 多圆碰撞模型参数 ===
-# 车身宽度 0.5m，半宽作为每个碰撞圆的半径
-VEHICLE_HALF_WIDTH = 0.25
-# 6 个碰撞检测圆的局部 x 偏移量（从后向前沿车身中心线分布）
-# 正值 = 后方，负值 = 前方（叉齿方向），间距 ≤ 2×HALF_WIDTH=0.5m 确保无缝覆盖
-VEHICLE_CHECK_OFFSETS = (0.5, 0.0, -0.5, -1.0, -1.45, -1.87)
-# 参考点到最远碰撞圆边缘的最大距离（用于快速排斥）
-VEHICLE_MAX_RADIUS = 1.87 + VEHICLE_HALF_WIDTH  # 2.12m
+# 默认值：长 1.5m × 宽 0.5m → 3 个碰撞圆（半径 0.25m）
+VEHICLE_LENGTH = 1.5    # m, 车辆总长（含叉齿）
+VEHICLE_WIDTH  = 0.5    # m, 车辆总宽
+VEHICLE_HALF_WIDTH = 0.25       # = width / 2
+VEHICLE_CHECK_OFFSETS = (0.17, -0.33, -0.83)  # 3 个圆的局部 x 偏移
+VEHICLE_MAX_RADIUS = 0.83 + 0.25  # 1.08m（最远圆心距 + 半径）
+
+
+def configure_vehicle(length=1.5, width=0.5):
+    """
+    根据用户提供的长宽参数，自动计算多圆碰撞模型。
+
+    参数:
+        length: 车辆总长（含叉齿），单位 m，默认 1.5
+        width:  车辆总宽，单位 m，默认 0.5
+
+    算法:
+        - half_width = width / 2（每个碰撞圆的半径）
+        - span = length - width（最前与最后圆心之间的距离）
+        - 圆的数量 = ceil(span / width) + 1（确保相邻圆心距 ≤ width，无缝覆盖）
+        - 后方偏移 ≈ span 的 1/6（参考点接近后轴）
+    """
+    global VEHICLE_LENGTH, VEHICLE_WIDTH, VEHICLE_HALF_WIDTH
+    global VEHICLE_CHECK_OFFSETS, VEHICLE_MAX_RADIUS
+
+    VEHICLE_LENGTH = length
+    VEHICLE_WIDTH = width
+    VEHICLE_HALF_WIDTH = width / 2.0
+
+    span = length - width  # 圆心之间的总跨度
+    if span <= 0:
+        # 极端情况：长 ≤ 宽，用单个圆
+        VEHICLE_CHECK_OFFSETS = (0.0,)
+        VEHICLE_MAX_RADIUS = VEHICLE_HALF_WIDTH
+        return
+
+    max_gap = width  # = 2 * half_width，保证无缝
+    # 加 1e-9 容差防止浮点误差（如 1.2/0.6=2.0000000000000004 → ceil=3）
+    n_circles = max(2, math.ceil(span / max_gap - 1e-9) + 1)
+
+    # 后方偏移 ≈ span/6，参考点略偏向车尾
+    rear_offset = round(span / 6.0, 2)
+    if rear_offset < 0.05:
+        rear_offset = 0.05
+
+    if n_circles == 2:
+        VEHICLE_CHECK_OFFSETS = (
+            round(rear_offset, 2),
+            round(-(span - rear_offset), 2),
+        )
+    else:
+        step = span / (n_circles - 1)
+        VEHICLE_CHECK_OFFSETS = tuple(
+            round(rear_offset - i * step, 2) for i in range(n_circles)
+        )
+
+    front_offset = min(VEHICLE_CHECK_OFFSETS)
+    VEHICLE_MAX_RADIUS = abs(front_offset) + VEHICLE_HALF_WIDTH
 
 def init_primitives():
     """前向积分预推演 30 种运动基元，并将相对坐标增量与相对角度的正余弦值进行缓存"""

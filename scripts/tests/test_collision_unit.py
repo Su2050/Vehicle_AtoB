@@ -84,10 +84,10 @@ def test_multiple_obstacles():
 def test_multi_circle_front_collision():
     """多圆模型：前端碰撞圆（叉齿方向）检测碰撞
     障碍物: x∈[5.0,6.0], y∈[-0.5,0.5]
-    叉车在 (3.5, 0.0, 0.0)，th=0 → 前端圆 offset=-1.87 at (5.37, 0.0)
-    5.37 在 [5.0, 6.0] 内，距离=0 < 0.25 → collision"""
+    叉车在 (4.2, 0.0, 0.0)，th=0 → 前端圆 offset=-1.0 at (5.2, 0.0)
+    5.2 在 [5.0, 6.0] 内，距离=0 < half_width → collision"""
     obs = [{'x': 5.0, 'y': -0.5, 'w': 1.0, 'h': 1.0}]
-    ok, reason = check_collision(3.5, 0.0, 0.0, obstacles=obs)
+    ok, reason = check_collision(4.2, 0.0, 0.0, obstacles=obs)
     assert ok is False
     assert reason == 'OBSTACLE'
 
@@ -95,9 +95,9 @@ def test_multi_circle_angled():
     """多圆模型：斜向角度时碰撞检测
     叉车在 (4.0, 0.0, pi/2)，th=pi/2 → cos=0, sin=1
     车身沿 y 方向展开：px=4.0, py=-offset for each offset
-    前端圆 offset=-1.87 → py=1.87, 后端圆 offset=0.5 → py=-0.5
+    前端圆 offset=-1.0 → py=1.0, 后端圆 offset=0.2 → py=-0.2
     障碍物: x∈[3.5,4.5], y∈[2.5,3.5]
-    前端圆 at (4.0, 1.87)，dy=2.5-1.87=0.63 > 0.25 → safe"""
+    前端圆 at (4.0, 1.0)，dy=2.5-1.0=1.5 > half_width → safe"""
     obs = [{'x': 3.5, 'y': 2.5, 'w': 1.0, 'h': 1.0}]
     ok, reason = check_collision(4.0, 0.0, math.pi / 2, obstacles=obs)
     assert ok is True
@@ -106,7 +106,7 @@ def test_multi_circle_angled():
 def test_quick_rejection():
     """快速排斥：远离障碍物时不需要逐圆检查
     叉车在 (5.0, 0.0)，障碍物在 (8.0, 3.0)
-    距离 > VEHICLE_MAX_RADIUS(2.12) → 快速跳过"""
+    距离 > VEHICLE_MAX_RADIUS → 快速跳过"""
     obs = [{'x': 8.0, 'y': 3.0, 'w': 1.0, 'h': 1.0}]
     ok, reason = check_collision(5.0, 0.0, 0.0, obstacles=obs)
     assert ok is True

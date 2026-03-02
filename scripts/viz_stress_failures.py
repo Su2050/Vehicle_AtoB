@@ -28,10 +28,9 @@ RS_GOAL_Y = 0.0
 WALL_X_MIN, WALL_X_MAX = 1.92, 3.0
 WALL_Y_MIN, WALL_Y_MAX = -3.0, 3.0
 
-# ── 多圆碰撞模型参数（与 primitives.py 一致）──
-VEHICLE_HALF_WIDTH = 0.25
-VEHICLE_CHECK_OFFSETS = (0.5, 0.0, -0.5, -1.0, -1.45, -1.87)
-VEHICLE_MAX_RADIUS = 1.87 + VEHICLE_HALF_WIDTH  # 2.12m
+# ── 多圆碰撞模型参数（从 primitives 动态读取）──
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import primitives
 
 
 def _draw_multi_circle_vehicle(ax, cx, cy, cth, color="#00aa00", alpha=0.25,
@@ -43,15 +42,15 @@ def _draw_multi_circle_vehicle(ax, cx, cy, cth, color="#00aa00", alpha=0.25,
     cos_th = math.cos(cth)
     sin_th = math.sin(cth)
 
-    for i, offset in enumerate(VEHICLE_CHECK_OFFSETS):
-        # 局部坐标系下：offset 沿车身 x 方向（正=后方，负=前方/叉齿方向）
-        # 车辆前方 = (-cos(θ), -sin(θ))
-        # 所以 offset>0 → 远离前方（后方），offset<0 → 靠近前方
+    offsets = primitives.VEHICLE_CHECK_OFFSETS
+    half_w = primitives.VEHICLE_HALF_WIDTH
+
+    for i, offset in enumerate(offsets):
         world_x = cx + offset * cos_th
         world_y = cy + offset * sin_th
 
         circle = mpatches.Circle(
-            (world_y, world_x), VEHICLE_HALF_WIDTH,
+            (world_y, world_x), half_w,
             linewidth=0.8, edgecolor=color, facecolor=color,
             alpha=alpha, zorder=zorder,
             label=label if i == 0 else None,
@@ -59,8 +58,8 @@ def _draw_multi_circle_vehicle(ax, cx, cy, cth, color="#00aa00", alpha=0.25,
         ax.add_patch(circle)
 
     # 绘制车身中心线（连接最前和最后的圆心）
-    front_offset = min(VEHICLE_CHECK_OFFSETS)
-    rear_offset = max(VEHICLE_CHECK_OFFSETS)
+    front_offset = min(offsets)
+    rear_offset = max(offsets)
     front_x = cx + front_offset * cos_th
     front_y = cy + front_offset * sin_th
     rear_x = cx + rear_offset * cos_th
@@ -116,7 +115,7 @@ def _draw_scene(ax, case, fail_type="TIMEOUT", show_title=True, compact=False):
     _draw_multi_circle_vehicle(
         ax, sx, sy, sth,
         color="#00aa00", alpha=0.25,
-        label="Vehicle (6-circle)" if not compact else None,
+        label=f"Vehicle ({len(primitives.VEHICLE_CHECK_OFFSETS)}-circle)" if not compact else None,
         zorder=8,
     )
 
@@ -354,7 +353,14 @@ def main():
                         help="Path to stress_collisions_*.json")
     parser.add_argument("--out-dir", type=str, default=None,
                         help="Output directory for plots")
+    parser.add_argument("--vehicle-length", type=float, default=1.5,
+                        help="Vehicle total length in meters (default: 1.5)")
+    parser.add_argument("--vehicle-width", type=float, default=0.5,
+                        help="Vehicle total width in meters (default: 0.5)")
     args = parser.parse_args()
+
+    # 配置车辆碰撞模型
+    primitives.configure_vehicle(args.vehicle_length, args.vehicle_width)
 
     script_dir = os.path.dirname(os.path.abspath(__file__))
     log_dir = os.path.join(script_dir, "logs")

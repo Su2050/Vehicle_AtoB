@@ -23,8 +23,9 @@ import multiprocessing as mp
 # 确保能 import 上层目录的模块
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import primitives
 from primitives import (init_primitives, simulate_path, RS_GOAL_X, RS_GOAL_Y, RS_GOAL_TH,
-                        ALIGN_GOAL_DYAW, VEHICLE_HALF_WIDTH, VEHICLE_CHECK_OFFSETS)
+                        ALIGN_GOAL_DYAW)
 from collision import check_collision
 from planner_obs import _preprocess_obstacles
 from planner_obs_v2 import plan_path_robust_obs_v2
@@ -260,7 +261,7 @@ def run_case_worker(case):
                     min_x, max_x = min(ox, ox+ow), max(ox, ox+ow)
                     min_y, max_y = min(oy, oy+oh), max(oy, oy+oh)
                     
-                    for offset in VEHICLE_CHECK_OFFSETS:
+                    for offset in primitives.VEHICLE_CHECK_OFFSETS:
                         px = nx + offset * cos_nth
                         py = ny + offset * sin_nth
                         dx = px - max_x if px > max_x else (min_x - px if px < min_x else 0.0)
@@ -270,9 +271,9 @@ def run_case_worker(case):
                             min_margin_sq = dist_sq
 
         result['collision'] = has_collision
-        # min_margin = circle center to AABB edge distance - VEHICLE_HALF_WIDTH = surface clearance
+        # min_margin = circle center to AABB edge distance - half_width = surface clearance
         if min_margin_sq < 999.0:
-            min_margin = math.sqrt(min_margin_sq) - VEHICLE_HALF_WIDTH
+            min_margin = math.sqrt(min_margin_sq) - primitives.VEHICLE_HALF_WIDTH
             if min_margin < 0.0:
                 min_margin = 0.0  # collision already caught above
         else:
@@ -301,7 +302,17 @@ def main():
     parser.add_argument('--workers', type=int, default=None,
                         help='并发 Worker 数量，默认等于 CPU 核心数')
     parser.add_argument('--seed', type=int, default=42, help='随机种子')
+    parser.add_argument('--vehicle-length', type=float, default=1.5,
+                        help='车辆总长(m)，默认 1.5')
+    parser.add_argument('--vehicle-width', type=float, default=0.5,
+                        help='车辆总宽(m)，默认 0.5')
     args = parser.parse_args()
+
+    # 配置车辆碰撞模型
+    primitives.configure_vehicle(args.vehicle_length, args.vehicle_width)
+    print(f"  Vehicle: {args.vehicle_length}m x {args.vehicle_width}m "
+          f"-> {len(primitives.VEHICLE_CHECK_OFFSETS)} circles, "
+          f"r={primitives.VEHICLE_HALF_WIDTH:.2f}m")
 
     cases = generate_cases(profile=args.profile, seed=args.seed)
     total_cases = len(cases)
