@@ -48,7 +48,7 @@ def _make_rs_expand_fn_multi(collision_fn, rs_expansion_radius, max_paths=8,
 
         trajs = rs.rs_sample_path_multi(
             cx, cy, cth, RS_GOAL_X, RS_GOAL_Y, RS_GOAL_TH,
-            MIN_TURN_RADIUS, step=DT * 0.5, max_paths=max_paths)
+            MIN_TURN_RADIUS, step=0.1, max_paths=max_paths, collision_fn=collision_fn)
 
         for traj in trajs:
             if not traj:
@@ -419,13 +419,7 @@ def _make_heuristic_fn_v2(dijkstra_grid, start_d_goal,
         else:
             h = h_grid * 1.5
 
-        dy_err = abs(ny - RS_GOAL_Y)
-        dx_err = nx - max(RS_GOAL_X, 2.0)
-        th_err = abs(nth - RS_GOAL_TH)
-        if (dy_err > 0.5 or th_err > 0.2) and dx_err > 0.0:
-            needed_x = dy_err * 2.0 + th_err * 1.5
-            if dx_err < needed_x:
-                h += min(50.0, (needed_x - dx_err) * 10.0)
+        # Removed heading penalty
 
         return h, h_weight
     return h_fn

@@ -70,9 +70,9 @@ def plan_path(x0, y0, theta0, precomp_prim,
             continue
 
         expanded += 1
-        if expanded % 5000 == 0:
+        if expanded < 20 or expanded % 5000 == 0:
             elapsed_so_far = (time.perf_counter() - t_start) * 1000
-            print(f"[A*] expanded={expanded}, f={f:.1f}, cx={cx:.2f}, cy={cy:.2f}, elapsed={elapsed_so_far:.0f}ms")
+            
 
         if expanded > _expand_limit:
             break
@@ -80,8 +80,10 @@ def plan_path(x0, y0, theta0, precomp_prim,
         if expanded % 500 == 0:
             now = time.perf_counter()
             if deadline is not None and now > deadline:
+                print(f"[A*] Deadline reached! now={now:.2f}, deadline={deadline:.2f}, elapsed={now - t_start:.2f}s")
                 break
             if deadline is None and (now - t_start) > 20.0:
+                print(f"[A*] 20s timeout reached! elapsed={now - t_start:.2f}s")
                 break
 
         cos_th = math.cos(cth)

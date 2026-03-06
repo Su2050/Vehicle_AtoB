@@ -192,6 +192,8 @@ def _k_turn_preposition_obs(x0, y0, theta0, precomp_prim, no_corridor, fast_obst
         return y_over + y_raw + y_center_pen + x_pen + x_over + th_pen + gear_pen
 
     def _check_goal():
+        if cx <= 2.25 and abs(cy) <= 0.2 and abs(cth) <= 0.2:
+            return True
         y_min, y_max = _get_safe_y_range()
         target_y = y_min if abs(cy - y_min) < abs(cy - y_max) else y_max
         required_x_min = max(PREAPPROACH_X_MIN, 2.3 + 2.0 * abs(cy - target_y))

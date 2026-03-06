@@ -764,7 +764,7 @@ def rs_sample_path(x1, y1, th1, x2, y2, th2, turning_radius, step=0.05,
     return world_pts
 
 
-def rs_sample_path_multi(x1, y1, th1, x2, y2, th2, turning_radius, step=0.05, max_paths=5):
+def rs_sample_path_multi(x1, y1, th1, x2, y2, th2, turning_radius, step=0.05, max_paths=5, collision_fn=None):
     """
     尝试多条 RS 路径（按长度排序），返回所有采样后的轨迹列表。
     用于在有障碍物时找到第一条无碰撞路径。
@@ -794,8 +794,30 @@ def rs_sample_path_multi(x1, y1, th1, x2, y2, th2, turning_radius, step=0.05, ma
     results = []
     for segs in all_segs[:max_paths]:
         cx_rs, cy_rs, cth_rs = 0.0, 0.0, 0.0
-        rs_pts = [(cx_rs, cy_rs, cth_rs)]
+        
+        # Add first point
+        lx_p = -cx_rs
+        ly_p = -cy_rs
+        wx = x1 + lx_p * cos_t - ly_p * sin_t
+        wy = y1 + lx_p * sin_t + ly_p * cos_t
+        wth = th1 + cth_rs
+        while wth > _PI: wth -= _TWO_PI
+        while wth <= -_PI: wth += _TWO_PI
+        
+        traj_ok = True
+        if collision_fn is not None:
+            valid, _ = collision_fn(wx, wy, wth)
+            if not valid:
+                traj_ok = False
+                
+        world_pts = [(wx, wy, wth)]
+        
+        if not traj_ok:
+            results.append([])
+            continue
+            
         for stype, length_m in segs:
+            if not traj_ok: break
             direction = 1 if length_m >= 0 else -1
             dist_left = abs(length_m)
             while dist_left > 1e-9:
@@ -816,20 +838,41 @@ def rs_sample_path_multi(x1, y1, th1, x2, y2, th2, turning_radius, step=0.05, ma
                     cth_rs += dth
                 while cth_rs > _PI: cth_rs -= _TWO_PI
                 while cth_rs <= -_PI: cth_rs += _TWO_PI
-                rs_pts.append((cx_rs, cy_rs, cth_rs))
-
-        # 逆变换：RS 标准系 → local（180° 旋转逆）→ world
-        world_pts = []
-        for xr, yr, thr in rs_pts:
-            lx_p = -xr
-            ly_p = -yr
-            wx = x1 + lx_p * cos_t - ly_p * sin_t
-            wy = y1 + lx_p * sin_t + ly_p * cos_t
-            wth = th1 + thr
-            while wth > _PI: wth -= _TWO_PI
-            while wth <= -_PI: wth += _TWO_PI
-            world_pts.append((wx, wy, wth))
-        results.append(world_pts)
+                
+                lx_p = -cx_rs
+                ly_p = -cy_rs
+                wx = x1 + lx_p * cos_t - ly_p * sin_t
+                wy = y1 + lx_p * sin_t + ly_p * cos_t
+                wth = th1 + cth_rs
+                while wth > _PI: wth -= _TWO_PI
+                while wth <= -_PI: wth += _TWO_PI
+                
+                world_pts.append((wx, wy, wth))
+        
+        if traj_ok and collision_fn is not None:
+            # Fast check with step=0.5
+            fast_step = 5
+            for i in range(0, len(world_pts), fast_step):
+                pt = world_pts[i]
+                valid, _ = collision_fn(pt[0], pt[1], pt[2])
+                if not valid:
+                    traj_ok = False
+                    break
+            
+            # Detailed check if fast check passed
+            if traj_ok:
+                for i in range(len(world_pts)):
+                    if i % fast_step == 0: continue
+                    pt = world_pts[i]
+                    valid, _ = collision_fn(pt[0], pt[1], pt[2])
+                    if not valid:
+                        traj_ok = False
+                        break
+                
+        if traj_ok:
+            results.append(world_pts)
+        else:
+            results.append([])
     return results
 
 

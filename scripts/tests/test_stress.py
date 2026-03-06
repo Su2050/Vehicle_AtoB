@@ -170,7 +170,7 @@ def run_case_worker(case):
     obstacles = case['obstacles']
     expect_fail = case.get('expect_fail', False)
     
-    timeout_s = 20 # 压力测试单用例超时
+    timeout_s = 32 # 压力测试单用例超时（SIGALRM），留 4s 余量给 cleanup
     
     stats = {}
     ok = False
@@ -182,12 +182,12 @@ def run_case_worker(case):
         signal.signal(signal.SIGALRM, _timeout_handler)
         signal.alarm(timeout_s)
         # 调用规划器 v2
-        # Pass _time_budget=18.0 so the planner knows the real constraint
-        # (SIGALRM fires at 20s; 2s margin for cleanup)
+        # Pass _time_budget=28.0 so the planner has ~28s real planning time
+        # (SIGALRM fires at 32s; 4s margin for cleanup)
         ok, acts, rs_traj = plan_path_robust_obs_v2(
             x, y, th, g_prims,
             use_rs=True, stats=stats, obstacles=obstacles,
-            _time_budget=18.0
+            _time_budget=28.0
         )
     except TimeoutError:
         timed_out = True
@@ -295,6 +295,130 @@ def run_case_worker(case):
 # 主控逻辑
 # ============================================================================
 
+def _percentile(sorted_vals, p):
+    """计算百分位数（线性插值）"""
+    if not sorted_vals:
+        return 0.0
+    idx = (len(sorted_vals) - 1) * p / 100.0
+    lo = int(idx)
+    hi = min(lo + 1, len(sorted_vals) - 1)
+    frac = idx - lo
+    return sorted_vals[lo] * (1 - frac) + sorted_vals[hi] * frac
+
+
+def _print_timing_analysis(records, profile):
+    """打印全量计时分布分析"""
+    print("\n" + "=" * 60)
+    print(" 📊 TIMING DISTRIBUTION ANALYSIS (for production threshold)")
+    print("=" * 60)
+
+    # 成功 case 的计时分析（最有价值：生产只关心能规划出来的场景）
+    succ_ms = sorted(r['elapsed_ms'] for r in records if r['category'] == 'SUCCESS')
+    timeout_ms = sorted(r['elapsed_ms'] for r in records if r['category'] == 'TIMEOUT')
+    unexpfail_ms = sorted(r['elapsed_ms'] for r in records if r['category'] == 'UNEXPECTED_FAIL')
+    all_ms = sorted(r['elapsed_ms'] for r in records)
+
+    if succ_ms:
+        print(f"\n  ✅ SUCCESS cases ({len(succ_ms)} total):")
+        print(f"     Min   : {succ_ms[0]:>10.1f} ms")
+        print(f"     P50   : {_percentile(succ_ms, 50):>10.1f} ms")
+        print(f"     P75   : {_percentile(succ_ms, 75):>10.1f} ms")
+        print(f"     P90   : {_percentile(succ_ms, 90):>10.1f} ms")
+        print(f"     P95   : {_percentile(succ_ms, 95):>10.1f} ms")
+        print(f"     P99   : {_percentile(succ_ms, 99):>10.1f} ms")
+        print(f"     Max   : {succ_ms[-1]:>10.1f} ms")
+        print(f"     Mean  : {sum(succ_ms)/len(succ_ms):>10.1f} ms")
+
+    if timeout_ms:
+        print(f"\n  ⏱️  TIMEOUT cases ({len(timeout_ms)} total):")
+        print(f"     Min   : {timeout_ms[0]:>10.1f} ms")
+        print(f"     Max   : {timeout_ms[-1]:>10.1f} ms")
+        print(f"     Mean  : {sum(timeout_ms)/len(timeout_ms):>10.1f} ms")
+
+    if unexpfail_ms:
+        print(f"\n  ⚠️  UNEXPECTED_FAIL cases ({len(unexpfail_ms)} total):")
+        print(f"     Min   : {unexpfail_ms[0]:>10.1f} ms")
+        print(f"     Max   : {unexpfail_ms[-1]:>10.1f} ms")
+        print(f"     Mean  : {sum(unexpfail_ms)/len(unexpfail_ms):>10.1f} ms")
+
+    # 按规划级别细分成功 case 的耗时
+    level_times = {}
+    for r in records:
+        if r['category'] == 'SUCCESS':
+            lv = r['level'] or 'unknown'
+            level_times.setdefault(lv, []).append(r['elapsed_ms'])
+    if level_times:
+        print(f"\n  📈 Timing by planner level (SUCCESS only):")
+        for lv in sorted(level_times.keys()):
+            vals = sorted(level_times[lv])
+            print(f"     {lv:30s} : n={len(vals):>4d}, "
+                  f"P50={_percentile(vals, 50):>8.1f}ms, "
+                  f"P95={_percentile(vals, 95):>8.1f}ms, "
+                  f"max={vals[-1]:>8.1f}ms")
+
+    # 生产超时阈值建议
+    if succ_ms:
+        p99 = _percentile(succ_ms, 99)
+        p95 = _percentile(succ_ms, 95)
+        print(f"\n  💡 Production Timeout Recommendation:")
+        print(f"     Conservative (P99 × 1.5) : {p99 * 1.5 / 1000.0:>6.1f}s")
+        print(f"     Moderate    (P95 × 2.0)  : {p95 * 2.0 / 1000.0:>6.1f}s")
+        print(f"     Aggressive  (P99 × 1.2)  : {p99 * 1.2 / 1000.0:>6.1f}s")
+    print("=" * 60)
+
+
+def _export_timing_data(records, profile):
+    """导出全量计时数据到 JSON，供后续分析"""
+    os.makedirs("logs", exist_ok=True)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    json_path = f"logs/stress_timing_{profile}_{ts}.json"
+
+    export = {
+        'profile': profile,
+        'timestamp': ts,
+        'total_cases': len(records),
+        'summary': {},
+        'records': records,
+    }
+
+    # 汇总统计
+    succ = [r['elapsed_ms'] for r in records if r['category'] == 'SUCCESS']
+    if succ:
+        succ_sorted = sorted(succ)
+        export['summary']['success'] = {
+            'count': len(succ),
+            'min_ms': succ_sorted[0],
+            'p50_ms': round(_percentile(succ_sorted, 50), 1),
+            'p75_ms': round(_percentile(succ_sorted, 75), 1),
+            'p90_ms': round(_percentile(succ_sorted, 90), 1),
+            'p95_ms': round(_percentile(succ_sorted, 95), 1),
+            'p99_ms': round(_percentile(succ_sorted, 99), 1),
+            'max_ms': succ_sorted[-1],
+            'mean_ms': round(sum(succ) / len(succ), 1),
+        }
+    timeout = [r['elapsed_ms'] for r in records if r['category'] == 'TIMEOUT']
+    if timeout:
+        export['summary']['timeout'] = {
+            'count': len(timeout),
+            'min_ms': min(timeout),
+            'max_ms': max(timeout),
+            'mean_ms': round(sum(timeout) / len(timeout), 1),
+        }
+    unexpfail = [r['elapsed_ms'] for r in records if r['category'] == 'UNEXPECTED_FAIL']
+    if unexpfail:
+        export['summary']['unexpected_fail'] = {
+            'count': len(unexpfail),
+            'min_ms': min(unexpfail),
+            'max_ms': max(unexpfail),
+            'mean_ms': round(sum(unexpfail) / len(unexpfail), 1),
+        }
+
+    with open(json_path, 'w', encoding='utf-8') as f:
+        json.dump(export, f, indent=2)
+    print(f"\n=> Exported full timing data ({len(records)} records) to {json_path}")
+    print(f"   Use this data to determine production timeout threshold.")
+
+
 def main():
     parser = argparse.ArgumentParser(description="大规模并行压力测试脚本")
     parser.add_argument('--profile', choices=['quick', 'standard', 'thorough'], default='quick',
@@ -337,6 +461,8 @@ def main():
     
     collision_cases_to_export = []
     timeout_cases_to_export = []
+    # ── 全量计时统计（用于确定生产超时阈值）──
+    all_timing_records = []  # 收集每个 case 的计时数据
     
     try:
         try:
@@ -348,6 +474,7 @@ def main():
             print("Progress: ", end="", flush=True)
 
         for i, res in enumerate(pool.imap_unordered(run_case_worker, cases)):
+            # 分类统计
             if res['ok']:
                 if res['collision']:
                     counts['TRAJ_COLLISION'] += 1
@@ -365,11 +492,31 @@ def main():
                 else:
                     counts['UNEXPECTED_FAIL'] += 1
             
+            # ── 收集每个 case 的计时记录 ──
+            category = 'SUCCESS'
+            if res['timed_out']:
+                category = 'TIMEOUT'
+            elif not res['ok'] and res.get('expect_fail'):
+                category = 'EXPECTED_FAIL'
+            elif not res['ok']:
+                category = 'UNEXPECTED_FAIL'
+            elif res.get('collision'):
+                category = 'TRAJ_COLLISION'
+            all_timing_records.append({
+                'case_id': res['id'],
+                'type': res['type'],
+                'category': category,
+                'elapsed_ms': round(res['elapsed_ms'], 1),
+                'expanded': res.get('expanded', 0),
+                'level': res.get('level', ''),
+            })
+
             if use_tqdm:
                 pbar.set_postfix({
                     'Succ': counts['SUCCESS'], 
                     'COLLISION': counts['TRAJ_COLLISION'],
-                    'UnexpFail': counts['UNEXPECTED_FAIL']
+                    'UnexpFail': counts['UNEXPECTED_FAIL'],
+                    'Timeout': counts['TIMEOUT']
                 })
                 pbar.update(1)
             else:
@@ -457,7 +604,6 @@ def main():
 
         # ── 打印超时分析摘要 ──
         print(f"\n=> Exported {len(to_data)} timeout cases to {json_path_to}")
-        # 按 type 分类统计
         from collections import Counter
         type_counts = Counter(c['type'] for c in to_data)
         nobs_counts = Counter(c['n_obs'] for c in to_data)
@@ -471,6 +617,12 @@ def main():
         if elapsed_vals:
             print(f"  Elapsed: min={min(elapsed_vals):.0f}ms, max={max(elapsed_vals):.0f}ms, "
                   f"avg={sum(elapsed_vals)/len(elapsed_vals):.0f}ms")
+
+    # ══════════════════════════════════════════════════════════════════════
+    # 📊 全量计时分析（用于确定生产超时阈值）
+    # ══════════════════════════════════════════════════════════════════════
+    _print_timing_analysis(all_timing_records, args.profile)
+    _export_timing_data(all_timing_records, args.profile)
 
 if __name__ == "__main__":
     mp.freeze_support()
