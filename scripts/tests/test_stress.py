@@ -7,6 +7,7 @@
 2. 使用 multiprocessing.Pool 满载 CPU 并行测试
 3. 严格验证完整动作轨迹（action trajectory），暴露假阳性碰撞 Bug
 4. 将轨迹碰撞的用例导出为 JSON 供 GUI 复现
+5. 包含 staggered-slalom 专项批量集，用于压测 late-merge / gate / deep-stage 策略
 """
 
 import os
@@ -64,6 +65,74 @@ def _is_goal_blocked(obstacles):
     valid, _ = check_collision(RS_GOAL_X, RS_GOAL_Y, RS_GOAL_TH, no_corridor=True, obstacles=fast_obs)
     return not valid
 
+
+def _build_slalom_staggered_scene(rng):
+    """
+    构造一组 3 障碍交错的 slalom 场景。
+
+    几何目标：
+      - 保留两个显式 gate，让 L1.8 的同伦选择更敏感
+      - 让起点通常位于障碍簇同侧，且带明显偏航误差
+      - 避免大面积生成显然 goal-blocked 的死局
+    """
+    x_base = rng.uniform(3.25, 4.10)
+    x_offsets = [
+        rng.uniform(-0.18, 0.06),
+        rng.uniform(0.15, 0.48),
+        rng.uniform(-0.05, 0.22),
+    ]
+    widths = [
+        rng.uniform(0.32, 0.50),
+        rng.uniform(0.38, 0.62),
+        rng.uniform(0.35, 0.56),
+    ]
+
+    low_y = rng.uniform(-2.80, -2.20)
+    low_h = rng.uniform(0.72, 1.00)
+    gap0 = rng.uniform(0.78, 1.12)
+    mid_y = low_y + low_h + gap0
+    mid_h = rng.uniform(0.95, 1.28)
+    gap1 = rng.uniform(0.72, 1.05)
+    high_y = mid_y + mid_h + gap1
+    high_h = rng.uniform(0.75, 1.05)
+
+    top = high_y + high_h
+    if top > 2.70:
+        shift = top - 2.70
+        low_y -= shift
+        mid_y -= shift
+        high_y -= shift
+    if low_y < -2.95:
+        shift = -2.95 - low_y
+        low_y += shift
+        mid_y += shift
+        high_y += shift
+
+    obstacles = [
+        {'x': round(x_base + x_offsets[0], 2), 'y': round(low_y, 2), 'w': round(widths[0], 2), 'h': round(low_h, 2)},
+        {'x': round(x_base + x_offsets[1], 2), 'y': round(mid_y, 2), 'w': round(widths[1], 2), 'h': round(mid_h, 2)},
+        {'x': round(x_base + x_offsets[2], 2), 'y': round(high_y, 2), 'w': round(widths[2], 2), 'h': round(high_h, 2)},
+    ]
+
+    cluster_x_max = max(ob['x'] + ob['w'] for ob in obstacles)
+    upper_clear_y = min(2.95, high_y + high_h + rng.uniform(0.55, 1.00))
+    lower_clear_y = max(-2.95, low_y - rng.uniform(0.55, 1.00))
+    start_x_anchor = cluster_x_max + rng.uniform(0.70, 2.10)
+
+    starts = [
+        (
+            start_x_anchor + rng.uniform(0.00, 0.90),
+            upper_clear_y,
+            math.radians(rng.uniform(60.0, 105.0)),
+        ),
+        (
+            start_x_anchor + rng.uniform(-0.20, 0.70),
+            lower_clear_y,
+            math.radians(rng.uniform(-105.0, -60.0)),
+        ),
+    ]
+    return obstacles, starts
+
 def generate_cases(profile="quick", seed=42):
     """
     根据档位生成测试用例集合
@@ -72,9 +141,9 @@ def generate_cases(profile="quick", seed=42):
     cases = []
     
     profiles = {
-        "quick": {"n_random": 100, "n_passage": 50, "n_blocked": 20, "grid_density": 1.0},
-        "standard": {"n_random": 1000, "n_passage": 300, "n_blocked": 100, "grid_density": 0.5},
-        "thorough": {"n_random": 4000, "n_passage": 1000, "n_blocked": 200, "grid_density": 0.25},
+        "quick": {"n_random": 100, "n_passage": 50, "n_blocked": 20, "n_slalom": 30, "grid_density": 1.0},
+        "standard": {"n_random": 1000, "n_passage": 300, "n_blocked": 100, "n_slalom": 120, "grid_density": 0.5},
+        "thorough": {"n_random": 4000, "n_passage": 1000, "n_blocked": 200, "n_slalom": 400, "grid_density": 0.25},
     }
     p = profiles.get(profile, profiles["quick"])
     
@@ -151,6 +220,12 @@ def generate_cases(profile="quick", seed=42):
         sy = rng.uniform(-2.0, 2.0)
         sth = rng.uniform(-math.pi, math.pi)
         add_case("GoalBlocked", sx, sy, sth, obstacles, expect_fail=True)
+
+    # 4. 交错 slalom 专项集
+    for _ in range(p["n_slalom"]):
+        obstacles, starts = _build_slalom_staggered_scene(rng)
+        for sx, sy, sth in starts:
+            add_case("SlalomStaggered", sx, sy, sth, obstacles)
 
     print(f"Generated {len(cases)} valid test cases after filtering.")
     return cases
@@ -422,7 +497,7 @@ def _export_timing_data(records, profile):
 def main():
     parser = argparse.ArgumentParser(description="大规模并行压力测试脚本")
     parser.add_argument('--profile', choices=['quick', 'standard', 'thorough'], default='quick',
-                        help='测试强度：quick(~300) / standard(~3000) / thorough(~10000)')
+                        help='测试强度：quick(~360) / standard(~3240) / thorough(~10800)，含 slalom 专项集')
     parser.add_argument('--workers', type=int, default=None,
                         help='并发 Worker 数量，默认等于 CPU 核心数')
     parser.add_argument('--seed', type=int, default=42, help='随机种子')
