@@ -213,6 +213,86 @@ def _generate_bypass_milestones(sx, sy, sth, obstacles, clearance=1.0):
     return milestones_primary + milestones_heading
 
 
+_L15_NEAR_GOAL_DIRECT_MAX = 3.0
+_L15_LOCAL_X_MARGIN = 1.2
+_L15_LOCAL_Y_MARGIN = 1.8
+
+
+def _normalize_obstacle_bounds(obs):
+    if isinstance(obs, dict):
+        ox, oy, ow, oh = obs['x'], obs['y'], obs['w'], obs['h']
+        return min(ox, ox + ow), max(ox, ox + ow), min(oy, oy + oh), max(oy, oy + oh)
+    if isinstance(obs, tuple) and len(obs) == 4:
+        return obs
+    return None
+
+
+def _select_l15_relevant_obstacles(sx, sy, obstacles):
+    """
+    Limit near-goal L1.5 milestone generation to obstacles that are local to the
+    start-goal workspace. This prevents far-away clutter from hijacking cases
+    whose real difficulty is only the final corridor merge.
+    """
+    direct = math.hypot(sx - RS_GOAL_X, sy - RS_GOAL_Y)
+    total = len(obstacles or [])
+    diag = {
+        'l15_direct_goal': round(direct, 3),
+        'l15_total_obstacle_count': total,
+        'l15_relevant_obstacle_count': 0,
+        'l15_relevant_obstacle_indices': [],
+        'l15_locality_mode': 'none',
+    }
+    if not obstacles:
+        return [], diag
+
+    if direct > _L15_NEAR_GOAL_DIRECT_MAX:
+        diag.update(
+            l15_locality_mode='all_obstacles',
+            l15_relevant_obstacle_count=total,
+            l15_relevant_obstacle_indices=list(range(total)),
+        )
+        return list(obstacles), diag
+
+    x_lo = min(sx, RS_GOAL_X) - 0.4
+    x_hi = max(sx, RS_GOAL_X) + _L15_LOCAL_X_MARGIN
+    y_lo = min(sy, RS_GOAL_Y) - _L15_LOCAL_Y_MARGIN
+    y_hi = max(sy, RS_GOAL_Y) + _L15_LOCAL_Y_MARGIN
+    relevant = []
+    relevant_idx = []
+    for idx, obs in enumerate(obstacles):
+        bounds = _normalize_obstacle_bounds(obs)
+        if bounds is None:
+            continue
+        min_x, max_x, min_y, max_y = bounds
+        if max_x < x_lo or min_x > x_hi:
+            continue
+        if max_y < y_lo or min_y > y_hi:
+            continue
+        relevant.append(obs)
+        relevant_idx.append(idx)
+
+    diag.update(
+        l15_locality_mode='near_goal_local',
+        l15_relevant_obstacle_count=len(relevant),
+        l15_relevant_obstacle_indices=relevant_idx,
+        l15_local_window=(
+            round(x_lo, 2), round(x_hi, 2),
+            round(y_lo, 2), round(y_hi, 2),
+        ),
+    )
+    return relevant, diag
+
+
+def _find_first_invalid_traj_point(traj, collision_fn):
+    if not traj:
+        return None, None, None
+    for idx, pt in enumerate(traj):
+        valid, reason = collision_fn(pt[0], pt[1], pt[2])
+        if not valid:
+            return idx, pt, reason
+    return None, None, None
+
+
 def _check_traj_collision(traj, collision_fn):
     """Check if an RS trajectory is collision-free."""
     for pt in traj:
@@ -481,33 +561,49 @@ def _path_is_unreasonable(traj, sx, sy,
 
 def _try_milestone_rs_bypass(sx, sy, sth, obstacles, collision_fn,
                               fast_obstacles=None, no_corridor=False,
-                              max_paths=8, max_milestones=20, deadline=None):
+                              max_paths=8, max_milestones=20, deadline=None,
+                              diag_out=None):
     """
     Try multi-segment RS paths through milestone waypoints to bypass obstacles.
     Uses relaxed collision (no corridor) for mid-segments, strict for final segment.
     Returns (success, trajectory) or (False, None).
     """
     milestones = _generate_bypass_milestones(sx, sy, sth, obstacles)
+    if diag_out is not None:
+        diag_out['l15_milestone_count'] = len(milestones)
     if not milestones:
-        return False, None
+        return False, None, diag_out
 
     coll_relaxed = collision_fn
 
     step = DT * 0.5
     best_traj = None
     best_len = float('inf')
+    direct_goal = math.hypot(sx - RS_GOAL_X, sy - RS_GOAL_Y)
+
+    def _store_choice(mx, my, mth, tag, pattern, traj):
+        if diag_out is None:
+            return
+        path_len = _trajectory_length(traj)
+        diag_out.update({
+            'l15_selected_milestone': (round(mx, 2), round(my, 2), round(mth, 3)),
+            'l15_selected_milestone_tag': tag,
+            'l15_selected_pattern': pattern,
+            'l15_path_len': round(path_len, 3),
+            'l15_direct_ratio': round(path_len / max(direct_goal, 1e-6), 3),
+        })
 
     # --- Try 2-segment: start → wp → goal ---
-    for mx, my, mth, _tag in milestones[:max_milestones]:
+    for mx, my, mth, tag in milestones[:max_milestones]:
         if deadline is not None and time.perf_counter() > deadline:
-            return False, None  # Hard exit on deadline
+            return False, None, diag_out  # Hard exit on deadline
         seg1_list = rs.rs_sample_path_multi(
             sx, sy, sth, mx, my, mth,
             MIN_TURN_RADIUS, step=step, max_paths=max_paths)
 
         for seg1 in seg1_list:
             if deadline is not None and time.perf_counter() > deadline:
-                return False, None
+                return False, None, diag_out
             if not seg1 or not _check_traj_collision(seg1, coll_relaxed):
                 continue
 
@@ -517,7 +613,7 @@ def _try_milestone_rs_bypass(sx, sy, sth, obstacles, collision_fn,
 
             for seg2 in seg2_list:
                 if deadline is not None and time.perf_counter() > deadline:
-                    return False, None
+                    return False, None, diag_out
                 if not seg2 or not _check_traj_collision(seg2, collision_fn):
                     continue
                 ex, ey, eth = seg2[-1]
@@ -528,23 +624,24 @@ def _try_milestone_rs_bypass(sx, sy, sth, obstacles, collision_fn,
                 if total_len < best_len:
                     best_len = total_len
                     best_traj = seg1 + seg2
+                    _store_choice(mx, my, mth, tag, '2seg', best_traj)
                     # Exp-7: Return first viable 2-seg path immediately.
                     # Critical fix: without early exit, the exhaustive search
                     # across 30+ milestones causes deadline timeout, which
                     # then DISCARDS best_traj via `return False, None`.
-                    return True, best_traj
+                    return True, best_traj, diag_out
 
     if best_traj is not None:
-        return True, best_traj
+        return True, best_traj, diag_out
 
     # --- Try 3-segment: start → wp_bypass → wp_return → goal ---
     # Reduced return waypoints for speed
     return_wps = [
         (2.8, 0.0, 0.0), (3.0, 0.0, 0.0), (2.8, 0.15, 0.0),
     ]
-    for mx, my, mth, _tag in milestones[:max_milestones]:
+    for mx, my, mth, tag in milestones[:max_milestones]:
         if deadline is not None and time.perf_counter() > deadline:
-            return False, None
+            return False, None, diag_out
         seg1_list = rs.rs_sample_path_multi(
             sx, sy, sth, mx, my, mth,
             MIN_TURN_RADIUS, step=step, max_paths=4)  # Reduced from 6
@@ -554,13 +651,13 @@ def _try_milestone_rs_bypass(sx, sy, sth, obstacles, collision_fn,
             continue
         for rwx, rwy, rwth in return_wps:
             if deadline is not None and time.perf_counter() > deadline:
-                return False, None
+                return False, None, diag_out
             seg2_list = rs.rs_sample_path_multi(
                 mx, my, mth, rwx, rwy, rwth,
                 MIN_TURN_RADIUS, step=step, max_paths=6)  # Reduced from 12
             for seg2 in seg2_list:
                 if deadline is not None and time.perf_counter() > deadline:
-                    return False, None
+                    return False, None, diag_out
                 if not seg2 or not _check_traj_collision(seg2, coll_relaxed):
                     continue
                 seg3_list = rs.rs_sample_path_multi(
@@ -568,7 +665,7 @@ def _try_milestone_rs_bypass(sx, sy, sth, obstacles, collision_fn,
                     MIN_TURN_RADIUS, step=step, max_paths=3)  # Reduced from 5
                 for seg3 in seg3_list:
                     if deadline is not None and time.perf_counter() > deadline:
-                        return False, None
+                        return False, None, diag_out
                     if not seg3 or not _check_traj_collision(seg3, collision_fn):
                         continue
                     ex, ey, eth = seg3[-1]
@@ -579,12 +676,13 @@ def _try_milestone_rs_bypass(sx, sy, sth, obstacles, collision_fn,
                     if total_len < best_len:
                         best_len = total_len
                         best_traj = seg1_ok[0] + seg2 + seg3
+                        _store_choice(mx, my, mth, tag, '3seg', best_traj)
                         # Exp-7: Early exit for 3-seg path too
-                        return True, best_traj
+                        return True, best_traj, diag_out
 
     if best_traj is not None:
-        return True, best_traj
-    return False, None
+        return True, best_traj, diag_out
+    return False, None, diag_out
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -908,6 +1006,18 @@ def plan_path_robust_obs_v2(x0, y0, theta0, precomp_prim,
             stats.update(rs_stats)
             stats['level'] = 'L1_pure_rs'
             return True, acts, traj
+        if ok:
+            if _path_goes_behind_wall(traj):
+                stats['pure_rs_first_invalid_reason'] = 'BEHIND_WALL'
+            elif _path_is_unreasonable(traj, x0, y0):
+                stats['pure_rs_first_invalid_reason'] = 'UNREASONABLE'
+        else:
+            bad_idx, bad_pt, bad_reason = _find_first_invalid_traj_point(traj, coll_fn)
+            if bad_reason is not None:
+                stats['pure_rs_first_invalid_reason'] = bad_reason
+                stats['pure_rs_first_invalid_idx'] = bad_idx
+                stats['pure_rs_first_invalid_pt'] = (
+                    round(bad_pt[0], 3), round(bad_pt[1], 3), round(bad_pt[2], 3))
 
     # ── Level-1.5: Milestone RS bypass ──
     # Enable for ALL obstacle cases — single obstacles (S02/S03) also benefit
@@ -918,13 +1028,21 @@ def plan_path_robust_obs_v2(x0, y0, theta0, precomp_prim,
     #         cases — the multi-circle tail sweep makes milestone→goal RS
     #         geometrically infeasible near obstacles.  L1.5 fails fast (<1.5s),
     #         so 1s is sufficient while preserving budget for A*.
-    run_milestone_bypass = use_rs and bool(obstacles)
+    l15_obstacles, l15_diag = _select_l15_relevant_obstacles(x0, y0, obstacles or [])
+    stats.update(l15_diag)
+    if use_rs and bool(obstacles) and not l15_obstacles:
+        stats['l15_skipped_reason'] = 'no_local_obstacles'
+
+    run_milestone_bypass = use_rs and bool(l15_obstacles)
     if run_milestone_bypass:
         l15_deadline = min(time.perf_counter() + 1.0, planner_deadline)
-        bypass_ok, bypass_traj = _try_milestone_rs_bypass(
-            x0, y0, theta0, obstacles, coll_fn,
+        bypass_ok, bypass_traj, bypass_diag = _try_milestone_rs_bypass(
+            x0, y0, theta0, l15_obstacles, coll_fn,
             fast_obstacles=fast_obstacles, no_corridor=no_corridor,
-            max_paths=8, max_milestones=30, deadline=l15_deadline)
+            max_paths=8, max_milestones=30, deadline=l15_deadline,
+            diag_out={})
+        if bypass_diag:
+            stats.update(bypass_diag)
         if bypass_ok and not _path_goes_behind_wall(bypass_traj) \
                 and not _path_is_unreasonable(bypass_traj, x0, y0,
                                               max_ratio=5.0, max_lat_extra=3.0):

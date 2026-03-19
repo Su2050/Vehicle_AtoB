@@ -17,6 +17,7 @@ import sys
 import math
 import time
 import json
+import glob
 import signal
 import argparse
 import multiprocessing as mp
@@ -28,7 +29,8 @@ sys.path.insert(0, os.path.join(SCRIPT_DIR, "tests"))
 
 from test_stress import generate_cases  # noqa: E402
 import primitives  # noqa: E402
-from primitives import (init_primitives, simulate_path,  # noqa: E402
+from primitives import (init_primitives, simulate_path_strict,  # noqa: E402
+                        resolve_replay_primitives,
                         RS_GOAL_X, RS_GOAL_Y)
 from planner_obs import _preprocess_obstacles  # noqa: E402
 from planner_obs_v2 import plan_path_robust_obs_v2  # noqa: E402
@@ -190,8 +192,25 @@ def _rerun_case(case_info, prims):
     )
 
     if ok:
-        traj_astar = (simulate_path(x, y, th, acts or [], prims)
-                      if acts else [(x, y, th)])
+        if acts:
+            replay_profile, replay_prims = resolve_replay_primitives(acts)
+            traj_astar = simulate_path_strict(
+                x, y, th, acts or [], replay_prims,
+                final_step_limit=stats.get("goal_step_hit"))
+        else:
+            replay_profile = "none"
+            traj_astar = [(x, y, th)]
+        join_error = 0.0
+        if traj_astar and rs_traj:
+            join_error = math.hypot(
+                traj_astar[-1][0] - rs_traj[0][0],
+                traj_astar[-1][1] - rs_traj[0][1],
+            )
+            if join_error > 1e-6:
+                raise RuntimeError(
+                    f"Trajectory join mismatch: replay_end={traj_astar[-1]} "
+                    f"rs_start={rs_traj[0]} dist={join_error:.6f}"
+                )
         full_traj = list(traj_astar)
         if rs_traj:
             full_traj.extend(rs_traj[1:] if full_traj else rs_traj)
@@ -200,6 +219,8 @@ def _rerun_case(case_info, prims):
             "traj_astar": traj_astar,
             "rs_traj": rs_traj,
             "full_traj": full_traj,
+            "join_error": join_error,
+            "replay_primitive_profile": replay_profile,
             "level": stats.get("level", ""),
             "expanded": stats.get("expanded", 0),
         }
@@ -442,6 +463,8 @@ def _plot_individual(cases, traj_list, out_dir):
             f"Path length:   {plen:.2f} m",
             f"Euclidean:     {euclidean:.2f} m",
             f"Detour ratio:  {plen / max(euclidean, 0.1):.2f}x",
+            f"Replay prims:  {td.get('replay_primitive_profile', '?')}",
+            f"Join error:    {td.get('join_error', 0.0):.6f}",
             f"Difficulty:    {c.get('difficulty_score', 0):.1f}",
         ]
         ax.text(0.02, 0.02, "\n".join(info), transform=ax.transAxes,
@@ -466,6 +489,15 @@ def _plot_individual(cases, traj_list, out_dir):
         fig.savefig(fpath, dpi=150)
         plt.close(fig)
         print(f"  [{idx + 1}/{len(cases)}] saved: {fpath}")
+
+
+def _clear_previous_outputs(out_dir):
+    for pattern in ("hard_*.png", "hard_cases_overview.png", "hard_cases_data.json"):
+        for path in glob.glob(os.path.join(out_dir, pattern)):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
 
 
 # ============================================================================
@@ -496,6 +528,7 @@ def main():
                or os.path.join(os.path.dirname(script_dir),
                                "docs", "stress_hard_cases"))
     os.makedirs(out_dir, exist_ok=True)
+    _clear_previous_outputs(out_dir)
 
     # ── Phase 1: 生成 case ──
     print("=" * 60)
@@ -572,10 +605,10 @@ def main():
         r["difficulty_score"] = _difficulty_score(r)
 
     success_results.sort(key=lambda r: r["difficulty_score"], reverse=True)
-    top_cases = success_results[:args.top]
+    ranked_cases = success_results
 
     print()
-    for i, c in enumerate(top_cases):
+    for i, c in enumerate(ranked_cases[:args.top]):
         print(f"  {i + 1:2d}. ID={c['id']:5d} | {c['type']:<25s} | "
               f"{c['elapsed_ms']:7.0f}ms | shifts={c.get('gear_shifts', 0)} | "
               f"len={c.get('path_length', 0):.1f}m | "
@@ -583,22 +616,44 @@ def main():
 
     # ── Phase 4: 重跑获取轨迹 ──
     print(f"\n{'=' * 60}")
-    print(f"  Phase 4: Re-running {len(top_cases)} cases for trajectories")
+    print(f"  Phase 4: Re-running candidates for {args.top} valid trajectories")
     print("=" * 60)
 
     prims = init_primitives()
+    top_cases = []
     traj_data_list = []
+    skipped_cases = []
 
-    for i, case in enumerate(top_cases):
-        print(f"  [{i + 1}/{len(top_cases)}] "
+    for candidate_idx, case in enumerate(ranked_cases, start=1):
+        if len(top_cases) >= args.top:
+            break
+        print(f"  [cand {candidate_idx}/{len(ranked_cases)} | "
+              f"keep {len(top_cases) + 1}/{args.top}] "
               f"Re-running case #{case['id']}...", end=" ", flush=True)
         t0 = time.perf_counter()
-        td = _rerun_case(case, prims)
+        try:
+            td = _rerun_case(case, prims)
+        except Exception as exc:
+            el = (time.perf_counter() - t0) * 1000
+            print(f"SKIP ({el:.0f}ms, {exc})")
+            skipped_cases.append({
+                "id": case["id"],
+                "type": case["type"],
+                "error": str(exc),
+            })
+            continue
         el = (time.perf_counter() - t0) * 1000
         status = "OK" if td["ok"] else "FAIL"
         n_pts = len(td.get("full_traj", [])) if td["ok"] else 0
         print(f"{status} ({el:.0f}ms, {n_pts} pts)")
+        top_cases.append(case)
         traj_data_list.append(td)
+
+    if skipped_cases:
+        print(f"\n  Skipped {len(skipped_cases)} candidate(s) with replay/join issues.")
+    if len(top_cases) < args.top:
+        print(f"  Warning: only collected {len(top_cases)} valid trajectories "
+              f"(requested {args.top}).")
 
     # ── Phase 5: 可视化 ──
     print(f"\n{'=' * 60}")
@@ -615,7 +670,7 @@ def main():
     # 保存 JSON
     json_path = os.path.join(out_dir, "hard_cases_data.json")
     export = []
-    for c in top_cases:
+    for c, td in zip(top_cases, traj_data_list):
         export.append({
             "id": c["id"], "type": c["type"],
             "x": c["x"], "y": c["y"], "th": c["th"],
@@ -626,10 +681,18 @@ def main():
             "difficulty_score": round(c["difficulty_score"], 1),
             "level": c.get("level", ""),
             "expanded": c.get("expanded", 0),
+            "replay_primitive_profile": td.get("replay_primitive_profile", ""),
+            "join_error": round(td.get("join_error", 0.0), 9),
         })
     with open(json_path, "w", encoding="utf-8") as f:
         json.dump(export, f, indent=2)
     print(f"\n  Case data saved: {json_path}")
+
+    if skipped_cases:
+        skipped_path = os.path.join(out_dir, "hard_cases_skipped.json")
+        with open(skipped_path, "w", encoding="utf-8") as f:
+            json.dump(skipped_cases, f, indent=2)
+        print(f"  Skipped case data saved: {skipped_path}")
 
     print(f"\n{'=' * 60}")
     total_plots = len(top_cases) + 1

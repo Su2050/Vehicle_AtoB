@@ -8,8 +8,10 @@ from primitives import (
     DEFAULT_PRIMITIVE_PROFILE,
     SLALOM_PRIMITIVE_PROFILE,
     init_primitives,
+    resolve_replay_primitives,
     _replay_to_end,
     simulate_path,
+    simulate_path_strict,
     DT,
     WHEELBASE,
     MAX_STEER,
@@ -133,6 +135,37 @@ def test_simulate_path_goal_truncation():
     assert abs(last_pt[1]) <= 0.18
     assert abs(last_pt[2]) <= ALIGN_GOAL_DYAW
 
+def test_resolve_replay_primitives_picks_slalom_for_long_arc():
+    """包含 1.2s 满舵长弧时，应自动选择 slalom bank。"""
+    acts = [('R', -1.0, 1.2), ('F', 1.0, 1.2), ('F', 0.0, 0.5)]
+    profile, prims = resolve_replay_primitives(acts)
+    keys = {key for key, _, _ in prims}
+    assert profile == SLALOM_PRIMITIVE_PROFILE
+    assert set(acts).issubset(keys)
+
+def test_simulate_path_strict_rejects_unknown_actions():
+    """严格回放不允许静默跳过未知动作。"""
+    prims = init_primitives(profile=DEFAULT_PRIMITIVE_PROFILE)
+    try:
+        simulate_path_strict(4.0, 2.0, 0.5, [('F', 1.0, 1.2)], prims)
+    except KeyError as exc:
+        assert "Unknown actions" in str(exc)
+    else:
+        raise AssertionError("simulate_path_strict should reject unknown actions")
+
+def test_simulate_path_strict_final_step_limit_truncates_last_action():
+    """严格回放应支持按 goal_step_hit 截断最后一个 primitive。"""
+    prims = init_primitives(profile=DEFAULT_PRIMITIVE_PROFILE)
+    act = ('F', 0.0, 1.0)
+    full = simulate_path_strict(4.0, 0.0, 0.0, [act], prims, stop_at_goal=False)
+    limited = simulate_path_strict(
+        4.0, 0.0, 0.0, [act], prims,
+        stop_at_goal=False, final_step_limit=3)
+
+    assert len(full) > len(limited)
+    assert len(limited) == 4  # start + 3 replay steps
+    assert limited[-1][0] > full[-1][0]
+
 def test_constants_exported():
     """DT, WHEELBASE, MAX_STEER, M_PI, PI2, ALIGN_GOAL_DYAW 均应可访问"""
     assert DT > 0
@@ -151,5 +184,8 @@ if __name__ == "__main__":
     test_slalom_profile_increases_turning_reach()
     test_replay_to_end_consistency()
     test_simulate_path_goal_truncation()
+    test_resolve_replay_primitives_picks_slalom_for_long_arc()
+    test_simulate_path_strict_rejects_unknown_actions()
+    test_simulate_path_strict_final_step_limit_truncates_last_action()
     test_constants_exported()
     print("All tests passed!")

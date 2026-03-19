@@ -45,6 +45,7 @@ VEHICLE_MAX_RADIUS = 0.83 + 0.25  # 1.08m（最远圆心距 + 半径）
 
 DEFAULT_PRIMITIVE_PROFILE = "default"
 SLALOM_PRIMITIVE_PROFILE = "slalom"
+_PRIMITIVE_BANK_CACHE = {}
 
 _BASE_TURN_DURATIONS = (0.33, 0.50, 0.67)
 _BASE_STRAIGHT_EXTRA_DURATIONS = (1.0, 1.5)
@@ -160,6 +161,42 @@ def init_primitives(profile=DEFAULT_PRIMITIVE_PROFILE):
                 
     return precomp_prim
 
+
+def get_cached_primitives(profile=DEFAULT_PRIMITIVE_PROFILE):
+    """Return a cached primitive bank for the requested profile."""
+    profile = (profile or DEFAULT_PRIMITIVE_PROFILE).lower()
+    prims = _PRIMITIVE_BANK_CACHE.get(profile)
+    if prims is None:
+        prims = init_primitives(profile=profile)
+        _PRIMITIVE_BANK_CACHE[profile] = prims
+    return prims
+
+
+def resolve_replay_primitives(actions, preferred_profile=DEFAULT_PRIMITIVE_PROFILE):
+    """
+    Choose a primitive bank that can exactly replay the provided action list.
+
+    We try the preferred profile first, then fall back to the slalom superset.
+    Raise ValueError if no known bank can represent every action.
+    """
+    actions = list(actions or [])
+    profiles = []
+    for profile in (preferred_profile, SLALOM_PRIMITIVE_PROFILE):
+        profile = (profile or DEFAULT_PRIMITIVE_PROFILE).lower()
+        if profile not in profiles:
+            profiles.append(profile)
+
+    missing_by_profile = {}
+    for profile in profiles:
+        prims = get_cached_primitives(profile)
+        known = {p[0] for p in prims}
+        missing = [act for act in actions if act not in known]
+        if not missing:
+            return profile, prims
+        missing_by_profile[profile] = sorted(set(missing))
+
+    raise ValueError(f"No primitive bank can replay actions; missing={missing_by_profile}")
+
 def _replay_to_end(x0, y0, theta0, acts, precomp_prim):
     """用动作序列计算最终位姿（取每段 primitive 的最后一步）"""
     cx, cy, cth = x0, y0, theta0
@@ -178,7 +215,7 @@ def _replay_to_end(x0, y0, theta0, acts, precomp_prim):
         cx, cy, cth = nx, ny, nth
     return cx, cy, cth
 
-def simulate_path(x0, y0, theta0, actions, precomp_prim):
+def simulate_path(x0, y0, theta0, actions, precomp_prim, final_step_limit=None):
     """
     根据动作序列回放路径，返回完整的轨迹点
     用于可视化
@@ -192,12 +229,15 @@ def simulate_path(x0, y0, theta0, actions, precomp_prim):
         # p[0] is (g_name, s, d)
         prim_map[p[0]] = p[2] # p[2] is traj
         
-    for act in actions:
+    actions = list(actions or [])
+    for idx, act in enumerate(actions):
         # act is (g_name, s, d)
         if act not in prim_map:
             continue
-            
+
         traj = prim_map[act]
+        if final_step_limit is not None and idx == len(actions) - 1:
+            traj = traj[:max(0, min(int(final_step_limit), len(traj)))]
         cos_th = math.cos(cth)
         sin_th = math.sin(cth)
         
@@ -218,4 +258,47 @@ def simulate_path(x0, y0, theta0, actions, precomp_prim):
         # 更新当前点为这一段的终点
         cx, cy, cth = trajectory[-1]
         
+    return trajectory
+
+
+def simulate_path_strict(x0, y0, theta0, actions, precomp_prim,
+                         stop_at_goal=True, final_step_limit=None):
+    """
+    Replay a path exactly. Unlike simulate_path(), this fails loudly if any
+    action is missing from the supplied primitive bank.
+    """
+    trajectory = [(x0, y0, theta0)]
+    cx, cy, cth = x0, y0, theta0
+
+    prim_map = {p[0]: p[2] for p in precomp_prim}
+    missing = [act for act in (actions or []) if act not in prim_map]
+    if missing:
+        raise KeyError(f"Unknown actions during strict replay: {sorted(set(missing))}")
+
+    actions = list(actions or [])
+    for idx, act in enumerate(actions):
+        traj = prim_map[act]
+        if final_step_limit is not None and idx == len(actions) - 1:
+            traj = traj[:max(0, min(int(final_step_limit), len(traj)))]
+        cos_th = math.cos(cth)
+        sin_th = math.sin(cth)
+
+        for dx, dy, dth, _, _ in traj:
+            nx = cx + dx * cos_th - dy * sin_th
+            ny = cy + dx * sin_th + dy * cos_th
+            nth = cth + dth
+
+            if nth > M_PI:
+                nth -= PI2
+            elif nth <= -M_PI:
+                nth += PI2
+
+            trajectory.append((nx, ny, nth))
+
+            if (stop_at_goal and nx <= 2.25 and -0.18 <= ny <= 0.18
+                    and -ALIGN_GOAL_DYAW <= nth <= ALIGN_GOAL_DYAW):
+                return trajectory
+
+        cx, cy, cth = trajectory[-1]
+
     return trajectory

@@ -10,6 +10,7 @@ try:
     import planner_obs_v2 as planner_obs_v2_mod
     from planner_obs_v2 import (
         _build_kturn_seed_candidates,
+        _select_l15_relevant_obstacles,
         plan_path_robust_obs_v2,
         _check_l18_quality,
         _check_rescue_seed_quality,
@@ -17,6 +18,7 @@ try:
 except ImportError:
     planner_obs_v2_mod = None
     _build_kturn_seed_candidates = None
+    _select_l15_relevant_obstacles = None
     plan_path_robust_obs_v2 = None
     _check_l18_quality = None
     _check_rescue_seed_quality = None
@@ -106,6 +108,37 @@ def test_planner_obs_v2_simple_obstacle_kturn_rescue_handoff_to_l2():
     assert st.get('l2_start_kind') == 'rescue', st
     assert not str(st.get('level', '')).startswith('L1_8_2d_skeleton'), st
     assert ok is False or str(st.get('level', '')).startswith('L2_'), st
+
+
+def test_planner_obs_v2_l15_locality_filter_skips_far_obstacles_for_near_goal_case():
+    """near-goal case 不应让远处障碍劫持 L1.5 milestone 生成。"""
+    if _select_l15_relevant_obstacles is None:
+        return
+    obs = [
+        {'x': 7.14, 'y': -1.20, 'w': 1.26, 'h': 1.26},
+        {'x': 6.75, 'y': 1.06, 'w': 1.22, 'h': 0.95},
+        {'x': 6.20, 'y': 1.74, 'w': 1.47, 'h': 0.43},
+        {'x': 6.23, 'y': -0.92, 'w': 0.47, 'h': 0.69},
+    ]
+    relevant, diag = _select_l15_relevant_obstacles(2.96, 0.63, obs)
+    assert relevant == [], (relevant, diag)
+    assert diag.get('l15_locality_mode') == 'near_goal_local', diag
+    assert diag.get('l15_relevant_obstacle_count') == 0, diag
+    assert diag.get('l15_total_obstacle_count') == 4, diag
+
+
+def test_planner_obs_v2_l15_locality_filter_keeps_local_obstacle():
+    """near-goal case 若局部障碍确实挡路，L1.5 仍应保留该障碍。"""
+    if _select_l15_relevant_obstacles is None:
+        return
+    obs = [
+        {'x': 2.45, 'y': -0.35, 'w': 0.55, 'h': 0.90},
+        {'x': 6.40, 'y': 1.20, 'w': 1.10, 'h': 1.00},
+    ]
+    relevant, diag = _select_l15_relevant_obstacles(3.00, 0.55, obs)
+    assert len(relevant) == 1, (relevant, diag)
+    assert relevant[0]['x'] == 2.45, (relevant, diag)
+    assert diag.get('l15_relevant_obstacle_indices') == [0], diag
 
 
 def test_planner_obs_v2_multi_rescue_candidates_pick_relaxed_band():

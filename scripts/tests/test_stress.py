@@ -20,21 +20,66 @@ import signal
 import argparse
 from datetime import datetime
 import multiprocessing as mp
+from collections import Counter
 
 # 确保能 import 上层目录的模块
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import primitives
-from primitives import (init_primitives, simulate_path, RS_GOAL_X, RS_GOAL_Y, RS_GOAL_TH,
+from primitives import (init_primitives, simulate_path_strict, resolve_replay_primitives,
+                        RS_GOAL_X, RS_GOAL_Y, RS_GOAL_TH,
                         ALIGN_GOAL_DYAW)
 from collision import check_collision
 from planner_obs import _preprocess_obstacles
 from planner_obs_v2 import plan_path_robust_obs_v2
+from solvability_oracle import assess_problem_solvability
 
 # ============================================================================
 # Worker 进程全局状态
 # ============================================================================
 g_prims = None
+
+_STRATEGY_EXPORT_FIELDS = (
+    'replay_primitive_profile',
+    'oracle_verdict',
+    'oracle_solvable',
+    'oracle_rationale',
+    'oracle_candidate_count',
+    'oracle_aligned_free_pose_count',
+    'oracle_local_box_clear_count',
+    'oracle_certificate_count',
+    'oracle_best_stage_pose',
+    'oracle_best_stage_insert_len',
+    'oracle_best_stage_reachable_2d',
+    'oracle_best_stage_2d_dist',
+    'failure_bucket',
+    'failure_bucket_reason',
+    'pure_rs_first_invalid_reason',
+    'pure_rs_first_invalid_idx',
+    'pure_rs_first_invalid_pt',
+    'l15_direct_goal',
+    'l15_total_obstacle_count',
+    'l15_relevant_obstacle_count',
+    'l15_relevant_obstacle_indices',
+    'l15_locality_mode',
+    'l15_local_window',
+    'l15_skipped_reason',
+    'l15_milestone_count',
+    'l15_selected_milestone',
+    'l15_selected_milestone_tag',
+    'l15_selected_pattern',
+    'l15_path_len',
+    'l15_direct_ratio',
+    'l18_late_merge_detected',
+    'late_merge_gate_hint',
+    'late_merge_gate_attempted',
+    'late_merge_gate_attempt_count',
+    'late_merge_gate_used_hint',
+    'late_merge_gate_stage_pose',
+    'late_merge_deep_attempted',
+    'late_merge_deep_start_kind',
+    'late_merge_deep_expanded',
+)
 
 def worker_init():
     """Pool worker 初始化函数，预计算运动基元，避免每个 case 重复计算"""
@@ -64,6 +109,50 @@ def _is_goal_blocked(obstacles):
     fast_obs = _preprocess_obstacles(obstacles) if obstacles else None
     valid, _ = check_collision(RS_GOAL_X, RS_GOAL_Y, RS_GOAL_TH, no_corridor=True, obstacles=fast_obs)
     return not valid
+
+
+def _classify_failure_bucket(oracle_verdict):
+    """
+    将 oracle verdict 收敛成压力测试要看的 3 个失败桶。
+
+    TERMINAL_BLOCKED:
+      目标位姿或目标前预对齐/插入区本身已经被堵死，属于“终点被堵死”。
+    LIKELY_MISSED_SOLVABLE:
+      找到了目标前 staging certificate，且 2D 上起点到 staging 有有限路，属于“很可能其实可解但没搜出来”。
+    TRUE_HARD_CASE:
+      终点没被直接堵死，但也没有足够强的全局可解证书；这类是“真难例”。
+    """
+    if oracle_verdict == 'LIKELY_UNSOLVABLE_TERMINAL':
+        return 'TERMINAL_BLOCKED', 'terminal_region_blocked'
+    if oracle_verdict == 'LIKELY_SOLVABLE':
+        return 'LIKELY_MISSED_SOLVABLE', 'staging_certificate_and_2d_reachability'
+    return 'TRUE_HARD_CASE', 'no_strong_terminal_or_global_certificate'
+
+
+def _attach_failure_oracle(case, result):
+    if result.get('ok') or result.get('timed_out') or result.get('expect_fail'):
+        return
+
+    oracle = assess_problem_solvability(
+        case['x'], case['y'], case['th'], case['obstacles']
+    )
+    term = oracle.get('terminal', {})
+    best = term.get('best_certificate') or {}
+    bucket, bucket_reason = _classify_failure_bucket(oracle.get('verdict'))
+
+    result['oracle_verdict'] = oracle.get('verdict')
+    result['oracle_solvable'] = oracle.get('solvable')
+    result['oracle_rationale'] = oracle.get('rationale')
+    result['oracle_candidate_count'] = term.get('candidate_count', 0)
+    result['oracle_aligned_free_pose_count'] = term.get('aligned_free_pose_count', 0)
+    result['oracle_local_box_clear_count'] = term.get('local_box_clear_count', 0)
+    result['oracle_certificate_count'] = term.get('certificate_count', 0)
+    result['oracle_best_stage_pose'] = best.get('stage_pose')
+    result['oracle_best_stage_insert_len'] = best.get('insert_path_len')
+    result['oracle_best_stage_reachable_2d'] = best.get('start_reachable_2d')
+    result['oracle_best_stage_2d_dist'] = best.get('start_to_stage_2d_dist')
+    result['failure_bucket'] = bucket
+    result['failure_bucket_reason'] = bucket_reason
 
 
 def _build_slalom_staggered_scene(rng):
@@ -287,20 +376,30 @@ def run_case_worker(case):
         'dangerous_margin': False,
         'min_margin': 999.0
     }
+    for field in _STRATEGY_EXPORT_FIELDS:
+        if field in stats:
+            result[field] = stats.get(field)
     
     # Attach full case info for timeout analysis
     if timed_out:
         result['full_case'] = case
+
+    if not ok and not timed_out and not expect_fail:
+        _attach_failure_oracle(case, result)
     
     # ── 核心：完整轨迹碰撞验证 ──
     if ok and not expect_fail:
         full_traj = []
         if acts:
             try:
-                full_traj = simulate_path(x, y, th, acts, g_prims)
+                replay_profile, replay_prims = resolve_replay_primitives(acts)
+                result['replay_primitive_profile'] = replay_profile
+                full_traj = simulate_path_strict(
+                    x, y, th, acts, replay_prims,
+                    final_step_limit=stats.get("goal_step_hit"))
             except Exception as e:
                 result['collision'] = True
-                result['collision_reason'] = f"simulate_path error: {str(e)}"
+                result['collision_reason'] = f"strict_replay error: {str(e)}"
         else:
             full_traj = [(x, y, th)]
             
@@ -365,6 +464,31 @@ def run_case_worker(case):
             result['rs_traj'] = rs_traj
 
     return result
+
+
+def _timing_record_from_result(res):
+    category = 'SUCCESS'
+    if res['timed_out']:
+        category = 'TIMEOUT'
+    elif not res['ok'] and res.get('expect_fail'):
+        category = 'EXPECTED_FAIL'
+    elif not res['ok']:
+        category = 'UNEXPECTED_FAIL'
+    elif res.get('collision'):
+        category = 'TRAJ_COLLISION'
+
+    record = {
+        'case_id': res['id'],
+        'type': res['type'],
+        'category': category,
+        'elapsed_ms': round(res['elapsed_ms'], 1),
+        'expanded': res.get('expanded', 0),
+        'level': res.get('level', ''),
+    }
+    for field in _STRATEGY_EXPORT_FIELDS:
+        if field in res:
+            record[field] = res.get(field)
+    return record
 
 # ============================================================================
 # 主控逻辑
@@ -487,6 +611,11 @@ def _export_timing_data(records, profile):
             'max_ms': max(unexpfail),
             'mean_ms': round(sum(unexpfail) / len(unexpfail), 1),
         }
+        bucket_counts = Counter(
+            r.get('failure_bucket', 'UNCLASSIFIED')
+            for r in records if r['category'] == 'UNEXPECTED_FAIL'
+        )
+        export['summary']['unexpected_fail']['buckets'] = dict(bucket_counts)
 
     with open(json_path, 'w', encoding='utf-8') as f:
         json.dump(export, f, indent=2)
@@ -533,6 +662,11 @@ def main():
         'UNEXPECTED_FAIL': 0,
         'TIMEOUT': 0
     }
+    failure_buckets = {
+        'TRUE_HARD_CASE': 0,
+        'TERMINAL_BLOCKED': 0,
+        'LIKELY_MISSED_SOLVABLE': 0,
+    }
     
     collision_cases_to_export = []
     timeout_cases_to_export = []
@@ -566,25 +700,12 @@ def main():
                     counts['EXPECTED_FAIL'] += 1
                 else:
                     counts['UNEXPECTED_FAIL'] += 1
+                    bucket = res.get('failure_bucket')
+                    if bucket in failure_buckets:
+                        failure_buckets[bucket] += 1
             
             # ── 收集每个 case 的计时记录 ──
-            category = 'SUCCESS'
-            if res['timed_out']:
-                category = 'TIMEOUT'
-            elif not res['ok'] and res.get('expect_fail'):
-                category = 'EXPECTED_FAIL'
-            elif not res['ok']:
-                category = 'UNEXPECTED_FAIL'
-            elif res.get('collision'):
-                category = 'TRAJ_COLLISION'
-            all_timing_records.append({
-                'case_id': res['id'],
-                'type': res['type'],
-                'category': category,
-                'elapsed_ms': round(res['elapsed_ms'], 1),
-                'expanded': res.get('expanded', 0),
-                'level': res.get('level', ''),
-            })
+            all_timing_records.append(_timing_record_from_result(res))
 
             if use_tqdm:
                 pbar.set_postfix({
@@ -621,6 +742,13 @@ def main():
     print(f"✅ SUCCESS (Safe)   : {counts['SUCCESS']} (Contains {counts['DANGEROUS_MARGIN']} dangerous margins)")
     print(f"🎯 EXPECTED FAIL    : {counts['EXPECTED_FAIL']} (Goal blocked, handled correctly)")
     print(f"⚠️ UNEXPECTED FAIL  : {counts['UNEXPECTED_FAIL']} (False Negatives, normal in complex mazes)")
+    if counts['UNEXPECTED_FAIL'] > 0:
+        print("   ├─ 真难例                : "
+              f"{failure_buckets['TRUE_HARD_CASE']}")
+        print("   ├─ 终点被堵死            : "
+              f"{failure_buckets['TERMINAL_BLOCKED']}")
+        print("   └─ 很可能其实可解但没搜出来 : "
+              f"{failure_buckets['LIKELY_MISSED_SOLVABLE']}")
     print(f"⏱️ TIMEOUT          : {counts['TIMEOUT']}")
     print("-" * 60)
     
@@ -673,6 +801,9 @@ def main():
                 'obstacles': fc.get('obstacles', []),
                 'n_obs': len(fc.get('obstacles', [])),
             })
+            for field in _STRATEGY_EXPORT_FIELDS:
+                if field in c:
+                    to_data[-1][field] = c.get(field)
 
         with open(json_path_to, 'w', encoding='utf-8') as f:
             json.dump(to_data, f, indent=2)
