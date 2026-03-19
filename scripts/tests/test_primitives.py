@@ -1,5 +1,22 @@
 import math
-from primitives import init_primitives, _replay_to_end, simulate_path, DT, WHEELBASE, MAX_STEER, M_PI, PI2, ALIGN_GOAL_DYAW
+import os
+import sys
+
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from primitives import (
+    DEFAULT_PRIMITIVE_PROFILE,
+    SLALOM_PRIMITIVE_PROFILE,
+    init_primitives,
+    _replay_to_end,
+    simulate_path,
+    DT,
+    WHEELBASE,
+    MAX_STEER,
+    M_PI,
+    PI2,
+    ALIGN_GOAL_DYAW,
+)
 
 def _approx(a, b, tol=1e-4):
     return abs(a - b) <= tol
@@ -8,6 +25,26 @@ def test_init_primitives_count():
     """init_primitives() 应返回 34 个运动基元"""
     prims = init_primitives()
     assert len(prims) == 34, f"Expected 34 primitives, got {len(prims)}"
+
+def test_init_primitives_slalom_profile_expands_bank():
+    """slalom profile 应保留默认基元，并追加更长弧线/更短直行。"""
+    default_prims = init_primitives(profile=DEFAULT_PRIMITIVE_PROFILE)
+    slalom_prims = init_primitives(profile=SLALOM_PRIMITIVE_PROFILE)
+    default_keys = {key for key, _, _ in default_prims}
+    slalom_keys = {key for key, _, _ in slalom_prims}
+
+    assert len(default_prims) == 34
+    assert len(slalom_prims) > len(default_prims)
+    assert default_keys.issubset(slalom_keys)
+
+    for key in [
+        ('F', 0.0, 0.17),
+        ('R', 0.0, 0.25),
+        ('F', 1.0, 1.2),
+        ('R', -1.0, 1.2),
+        ('F', 0.5, 0.85),
+    ]:
+        assert key in slalom_keys, f"Expected slalom-only primitive {key}"
 
 def test_primitive_structure():
     """每个基元为 ((gear, steer, duration), N, traj)，traj 每点 5 元组"""
@@ -51,6 +88,21 @@ def test_turning_primitive_angle():
             assert abs(last_pt[2]) > 0.03, f"Expected non-zero angle, got {last_pt[2]}"
     assert checked > 0, "No turning primitives with steer=1.0 were found"
 
+def test_slalom_profile_increases_turning_reach():
+    """slalom profile 的长弧应带来更大的单步姿态变化。"""
+    default_prims = init_primitives()
+    slalom_prims = init_primitives(profile=SLALOM_PRIMITIVE_PROFILE)
+
+    def _max_heading(prims, gear, steer):
+        headings = []
+        for key, _, traj in prims:
+            if key[0] == gear and key[1] == steer:
+                headings.append(abs(traj[-1][2]))
+        return max(headings)
+
+    assert _max_heading(slalom_prims, 'F', 1.0) > _max_heading(default_prims, 'F', 1.0)
+    assert _max_heading(slalom_prims, 'R', -1.0) > _max_heading(default_prims, 'R', -1.0)
+
 def test_replay_to_end_consistency():
     """_replay_to_end 结果应与 simulate_path 最终点一致"""
     prims = init_primitives()
@@ -92,9 +144,11 @@ def test_constants_exported():
 
 if __name__ == "__main__":
     test_init_primitives_count()
+    test_init_primitives_slalom_profile_expands_bank()
     test_primitive_structure()
     test_straight_primitive_endpoint()
     test_turning_primitive_angle()
+    test_slalom_profile_increases_turning_reach()
     test_replay_to_end_consistency()
     test_simulate_path_goal_truncation()
     test_constants_exported()

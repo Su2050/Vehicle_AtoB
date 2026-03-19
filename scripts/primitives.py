@@ -43,6 +43,15 @@ VEHICLE_HALF_WIDTH = 0.25       # = width / 2
 VEHICLE_CHECK_OFFSETS = (0.17, -0.33, -0.83)  # 3 个圆的局部 x 偏移
 VEHICLE_MAX_RADIUS = 0.83 + 0.25  # 1.08m（最远圆心距 + 半径）
 
+DEFAULT_PRIMITIVE_PROFILE = "default"
+SLALOM_PRIMITIVE_PROFILE = "slalom"
+
+_BASE_TURN_DURATIONS = (0.33, 0.50, 0.67)
+_BASE_STRAIGHT_EXTRA_DURATIONS = (1.0, 1.5)
+_SLALOM_STRAIGHT_DURATIONS = (0.17, 0.25, 0.33, 0.50, 0.67, 1.0, 1.5)
+_SLALOM_HALF_TURN_DURATIONS = (0.33, 0.50, 0.67, 0.85)
+_SLALOM_FULL_TURN_DURATIONS = (0.33, 0.50, 0.67, 0.85, 1.0, 1.2)
+
 
 def configure_vehicle(length=1.5, width=0.5):
     """
@@ -95,17 +104,38 @@ def configure_vehicle(length=1.5, width=0.5):
     front_offset = min(VEHICLE_CHECK_OFFSETS)
     VEHICLE_MAX_RADIUS = abs(front_offset) + VEHICLE_HALF_WIDTH
 
-def init_primitives():
-    """前向积分预推演 30 种运动基元，并将相对坐标增量与相对角度的正余弦值进行缓存"""
+def _primitive_durations_for(profile, steer):
+    if profile == DEFAULT_PRIMITIVE_PROFILE:
+        durations = list(_BASE_TURN_DURATIONS)
+        if steer == 0.0:
+            durations.extend(_BASE_STRAIGHT_EXTRA_DURATIONS)
+        return durations
+
+    if profile == SLALOM_PRIMITIVE_PROFILE:
+        if steer == 0.0:
+            return list(_SLALOM_STRAIGHT_DURATIONS)
+        if abs(steer) >= 0.99:
+            return list(_SLALOM_FULL_TURN_DURATIONS)
+        return list(_SLALOM_HALF_TURN_DURATIONS)
+
+    raise ValueError(f"Unknown primitive profile: {profile}")
+
+
+def init_primitives(profile=DEFAULT_PRIMITIVE_PROFILE):
+    """
+    前向积分预推演运动基元，并将相对坐标增量与相对角度的正余弦值进行缓存。
+
+    profile="default" 保持现有 34 个基元不变。
+    profile="slalom" 追加更长的弧线和更短的直行校正，专门给交错障碍场景使用。
+    """
+    profile = (profile or DEFAULT_PRIMITIVE_PROFILE).lower()
     gears = [('F', 0.25), ('R', -0.20)]
     steers = [-1.0, -0.5, 0.0, 0.5, 1.0]
     
     precomp_prim = []
     for g_name, v in gears:
         for s in steers:
-            durations = [0.33, 0.50, 0.67]
-            if s == 0.0:
-                durations.extend([1.0, 1.5])
+            durations = _primitive_durations_for(profile, s)
             for d in durations:
                 delta = s * MAX_STEER
                 # 依题意强制截断纠正浮点飘移 (例 0.33 / 1/30 ≈ 9.9 -> 10)

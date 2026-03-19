@@ -20,8 +20,10 @@ from collision import check_collision
 from rs_utils import plan_path_pure_rs
 from planner_obs import _preprocess_obstacles, _make_collision_fn, _k_turn_preposition_obs
 from heuristic import DijkstraGrid
-from fallback_2d import plan_2d_fallback
+from fallback_2d import plan_2d_fallback, _build_multi_homotopy_gate_candidates
 import astar_core
+
+_SLALOM_PRIMS_CACHE = None
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -80,6 +82,77 @@ def _make_rs_expand_fn_multi(collision_fn, rs_expansion_radius, max_paths=8,
                 return True, final_path, traj
         return None
     return rs_expand_fn
+
+
+def _get_slalom_primitives():
+    """
+    Lazily build the richer primitive bank used only by diagnosed slalom cases.
+    """
+    global _SLALOM_PRIMS_CACHE
+    if _SLALOM_PRIMS_CACHE is None:
+        _SLALOM_PRIMS_CACHE = primitives.init_primitives(
+            profile=primitives.SLALOM_PRIMITIVE_PROFILE)
+    return _SLALOM_PRIMS_CACHE
+
+
+def _collect_late_merge_gate_hints(start_x, start_y, primary_gate_hint, obstacles,
+                                   max_hints=3):
+    """
+    Return a small, deduplicated gate hint list for late-merge recovery.
+
+    Keep the diagnosed gate first, then add a few geometric alternates so the
+    gate stage can still hand deep search a usable intermediate pose when the
+    primary gate is dynamically awkward.
+    """
+    hints = []
+    seen = set()
+
+    def _norm(gate_hint):
+        if gate_hint is None:
+            return None
+        return (gate_hint[0], gate_hint[1], gate_hint[2] if len(gate_hint) > 2 else 0.0)
+
+    def _add(gate_hint):
+        gate_hint = _norm(gate_hint)
+        if gate_hint is None:
+            return
+        key = (round(gate_hint[0], 2), round(gate_hint[1], 2), round(gate_hint[2], 2))
+        if key in seen:
+            return
+        seen.add(key)
+        hints.append(gate_hint)
+
+    alt_hints = []
+    for item in _build_multi_homotopy_gate_candidates(start_x, start_y, obstacles):
+        gate_hint = _norm(item.get('gate'))
+        if gate_hint is not None:
+            alt_hints.append(gate_hint)
+
+    prefer_same_side_alt = bool(
+        primary_gate_hint is not None
+        and abs(start_y) > 0.8
+        and abs(primary_gate_hint[1]) > 0.2
+        and start_y * primary_gate_hint[1] < 0.0
+    )
+
+    if prefer_same_side_alt:
+        for gate_hint in alt_hints:
+            if start_y * gate_hint[1] >= 0.0:
+                _add(gate_hint)
+                break
+        _add(primary_gate_hint)
+        for gate_hint in alt_hints:
+            _add(gate_hint)
+            if len(hints) >= max_hints:
+                break
+    else:
+        _add(primary_gate_hint)
+        for gate_hint in alt_hints:
+            _add(gate_hint)
+            if len(hints) >= max_hints:
+                break
+
+    return hints[:max_hints]
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -550,6 +623,75 @@ def _make_heuristic_fn_v2(dijkstra_grid, start_d_goal,
     return h_fn
 
 
+def _make_gate_heuristic_fn_v2(goal_grid, gate_grid, gate_goal_dist,
+                               h_weight=3.0, gate_switch_dist=0.8):
+    """
+    Bias A* toward an intermediate gate before converging on the true goal.
+
+    Used only for diagnosed late-merge failures in multi-obstacle scenes, so it
+    stays as an additive fallback rather than replacing the default heuristic.
+    """
+    def h_fn(nx, ny, nth):
+        gate_h_dist, gate_pure = gate_grid.get_heuristic(nx, ny, nth)
+        goal_h_dist, _ = goal_grid.get_heuristic(nx, ny, nth)
+
+        if gate_pure != float('inf') and gate_pure > gate_switch_dist:
+            base_dist = gate_h_dist + gate_goal_dist
+        else:
+            base_dist = goal_h_dist
+
+        h_grid = base_dist / 0.25
+        euclidean = math.hypot(nx - RS_GOAL_X, ny - RS_GOAL_Y)
+        if euclidean < 4.0 and goal_grid.line_of_sight(nx, ny, RS_GOAL_X, RS_GOAL_Y):
+            rs_dist = rs.rs_distance_pose(
+                nx, ny, nth, RS_GOAL_X, RS_GOAL_Y, RS_GOAL_TH, MIN_TURN_RADIUS)
+            h_rs = rs_dist / 0.25
+            h = max(h_rs, h_grid * 1.15)
+        else:
+            h = h_grid * 1.4
+
+        return h, h_weight
+    return h_fn
+
+
+def _plan_to_gate_region(start_pose, gate_hint, precomp_prim, coll_fn,
+                         obstacles, gate_budget):
+    """
+    Explicit A* stage to a gate region, used for late-merge recovery.
+    """
+    sx, sy, sth = start_pose
+    gate_x, gate_y, _gate_th = gate_hint
+    gate_grid = DijkstraGrid(
+        gate_x, gate_y,
+        inflate_radius=primitives.VEHICLE_HALF_WIDTH + 0.05)
+    gate_grid.build_map(obstacles, start_x=sx, start_y=sy)
+    gate_h, gate_pure = gate_grid.get_heuristic(sx, sy, sth)
+    if gate_pure == float('inf'):
+        return False, None, None, {
+            'expanded': 0,
+            'elapsed_ms': 0.0,
+            'gate_pure': gate_pure,
+        }
+
+    gate_hfn = _make_heuristic_fn_v2(
+        gate_grid, gate_pure, allow_uphill=100.0, h_weight=2.5)
+    st_gate = {}
+    ok_gate, acts_gate, _traj_gate = astar_core.plan_path(
+        sx, sy, sth, precomp_prim,
+        collision_fn=coll_fn, heuristic_fn=gate_hfn,
+        rs_expand_fn=None, stats=st_gate,
+        _goal_xmin=gate_x - 0.2, _goal_xmax=gate_x + 0.2,
+        _goal_ymin=gate_y - 0.25, _goal_ymax=gate_y + 0.25,
+        _goal_thmax=math.pi,
+        _expand_limit=25000, _prim_limit=120,
+        _rs_expand=False,
+        deadline=time.perf_counter() + gate_budget)
+    st_gate['gate_pure'] = gate_pure
+    if not ok_gate:
+        return False, None, None, st_gate
+    return True, acts_gate or [], st_gate.get('goal_pos'), st_gate
+
+
 # ═══════════════════════════════════════════════════════════════════════
 # Improvement 3: Multi-stage recovery configuration
 # ═══════════════════════════════════════════════════════════════════════
@@ -583,6 +725,16 @@ RECOVERY_STAGES = [
         'h_weight': 2.0,
     },
 ]
+
+LATE_MERGE_DEEP_STAGE = {
+    'expand_limit': 180000,
+    'prim_limit': 180,
+    'step_limit': 1800,
+    'rs_radius': 8.0,
+    'max_rs_paths': 12,
+    'allow_uphill': 100.0,
+    'h_weight': 1.8,
+}
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -844,6 +996,7 @@ def plan_path_robust_obs_v2(x0, y0, theta0, precomp_prim,
     )
     rescue_acts = None
     rescue_seed = None
+    l18_gate_hint = None
     # Track best L1.8 candidates separately: QM-passing vs any collision-free
     _l18_qm_traj = None
     _l18_qm_acts = None
@@ -856,15 +1009,32 @@ def plan_path_robust_obs_v2(x0, y0, theta0, precomp_prim,
         def _try_l18_seed(sx2, sy2, sth2, seed_acts):
             nonlocal _l18_qm_traj, _l18_qm_acts, _l18_qm_spc
             nonlocal _l18_any_traj, _l18_any_acts, _l18_any_spc, _l18_any_len
+            nonlocal l18_gate_hint
             if time.perf_counter() > l18_deadline:
                 return False
             for spc in [2.5, 1.5, 1.0]:
                 if time.perf_counter() > l18_deadline:
                     break
+                fb2d_diag = {}
                 fb2d_ok, fb2d_traj = plan_2d_fallback(
                     dijkstra_grid, sx2, sy2, sth2, coll_relaxed,
                     spacing=spc, max_rs_paths=12, obstacles=obstacles,
-                    deadline=l18_deadline)
+                    deadline=l18_deadline, diag_out=fb2d_diag)
+                if fb2d_diag.get('late_merge_detected'):
+                    stats['l18_late_merge_detected'] = True
+                    stats['l18_late_merge_count'] = max(
+                        stats.get('l18_late_merge_count', 0),
+                        fb2d_diag.get('late_merge_count', 0))
+                    if fb2d_diag.get('gate_candidate_count'):
+                        stats['l18_gate_candidate_count'] = max(
+                            stats.get('l18_gate_candidate_count', 0),
+                            fb2d_diag.get('gate_candidate_count', 0))
+                    if fb2d_diag.get('suggested_gate') is not None and l18_gate_hint is None:
+                        l18_gate_hint = fb2d_diag.get('suggested_gate')
+                    if fb2d_diag.get('used_multi_homotopy_gate'):
+                        stats['l18_used_multi_gate'] = True
+                        if fb2d_diag.get('selected_gate') is not None:
+                            stats['l18_selected_gate'] = fb2d_diag.get('selected_gate')
                 if fb2d_ok and not _path_goes_behind_wall(fb2d_traj):
                     qm_ok, qm_reason = _check_l18_quality(
                         x0, y0, theta0, seed_acts, fb2d_traj, precomp_prim)
@@ -969,6 +1139,9 @@ def plan_path_robust_obs_v2(x0, y0, theta0, precomp_prim,
                 return True, _l18_any_acts, _l18_any_traj
             stats['l18_non_qm_deferred'] = True
 
+    if l18_gate_hint is not None:
+        stats['late_merge_gate_hint'] = l18_gate_hint
+
     # ── Level-2: Multi-stage A* from selected seed ──
     l2_mx, l2_my, l2_mth = mx, my, mth
     l2_prefix_acts = prefix_acts
@@ -1062,6 +1235,304 @@ def plan_path_robust_obs_v2(x0, y0, theta0, precomp_prim,
                     recovery_stage=stage_idx,
                 )
                 return True, final_acts, rs_traj
+
+    # ── Level-2.5: Gate-biased fallback for multi-obstacle late-merge failures ──
+    gate_x = gate_y = gate_goal_dist = gate_goal_pure = None
+    gate_stage_acts = []
+    gate_stage_pose = None
+    if (l18_gate_hint is not None and obstacles and fast_obstacles is not None
+            and len(fast_obstacles) >= 3):
+        gate_remaining = planner_deadline - time.perf_counter()
+        if gate_remaining > 2.0:
+            gate_hint_candidates = _collect_late_merge_gate_hints(
+                x0, y0, l18_gate_hint, obstacles, max_hints=3)
+            gate_stage_budget_total = min(6.0, max(3.0, gate_remaining * 0.35))
+            gate_stage_deadline = min(
+                time.perf_counter() + gate_stage_budget_total,
+                planner_deadline)
+            gate_stage_attempts = 0
+            ok_gate_stage = False
+            st_gate_stage = {'expanded': 0, 'elapsed_ms': 0.0}
+            slalom_prims = _get_slalom_primitives()
+
+            for gate_stage_hint in gate_hint_candidates:
+                remaining_gate_stage = gate_stage_deadline - time.perf_counter()
+                attempts_left = max(1, len(gate_hint_candidates) - gate_stage_attempts)
+                if remaining_gate_stage <= 0.75:
+                    break
+                gate_stage_attempt_budget = min(
+                    2.5, max(1.5, remaining_gate_stage / attempts_left))
+                ok_try, acts_try, pose_try, st_try = _plan_to_gate_region(
+                    (x0, y0, theta0), gate_stage_hint, slalom_prims,
+                    coll_fn, obstacles, gate_stage_attempt_budget)
+                gate_stage_attempts += 1
+                total_expanded += st_try.get('expanded', 0)
+                st_gate_stage = st_try
+                if ok_try:
+                    ok_gate_stage = True
+                    gate_stage_acts = acts_try or []
+                    gate_stage_pose = pose_try
+                    gate_x, gate_y, _gate_th = gate_stage_hint
+                    gate_goal_dist, gate_goal_pure = dijkstra_grid.get_heuristic(gate_x, gate_y)
+                    stats['late_merge_gate_used_hint'] = gate_stage_hint
+                    stats['late_merge_gate_stage_primitive_count'] = len(slalom_prims)
+                    break
+
+            if gate_x is None or gate_y is None:
+                gate_x, gate_y, _gate_th = l18_gate_hint
+            if gate_goal_dist is None or gate_goal_pure is None:
+                gate_goal_dist, gate_goal_pure = dijkstra_grid.get_heuristic(gate_x, gate_y)
+
+            stats['late_merge_gate_attempted'] = True
+            stats['late_merge_gate_attempt_count'] = gate_stage_attempts
+            stats['late_merge_gate_candidates'] = gate_hint_candidates
+            stats['late_merge_gate_stage_budget_ms'] = round(gate_stage_budget_total * 1000.0, 1)
+            stats['late_merge_gate_stage_expanded'] = st_gate_stage.get('expanded', 0)
+            stats['late_merge_gate_d_goal'] = round(gate_goal_dist, 3)
+            if gate_stage_pose is not None:
+                stats['late_merge_gate_stage_pose'] = gate_stage_pose
+
+            if ok_gate_stage:
+                gate_remaining = planner_deadline - time.perf_counter()
+                if gate_remaining > 1.5 and gate_goal_pure != float('inf'):
+                    # Prioritize the richer slalom deep stage once we have a
+                    # concrete gate-stage pose. The classic gate-biased A*
+                    # remains as a cheaper follow-up fallback if deep search
+                    # still misses.
+                    slalom_prims = _get_slalom_primitives()
+                    deep_gate_budget = min(4.5, max(1.5, gate_remaining * 0.65))
+                    deep_gate_deadline = min(
+                        time.perf_counter() + deep_gate_budget,
+                        planner_deadline)
+                    st_deep_gate = {}
+                    deep_gate_heuristic = _make_heuristic_fn_v2(
+                        dijkstra_grid, gate_goal_pure,
+                        allow_uphill=LATE_MERGE_DEEP_STAGE['allow_uphill'],
+                        h_weight=LATE_MERGE_DEEP_STAGE['h_weight'])
+                    deep_gate_rs_expand = _make_rs_expand_fn_multi(
+                        coll_fn,
+                        max(rs_expansion_radius, LATE_MERGE_DEEP_STAGE['rs_radius']),
+                        max_paths=LATE_MERGE_DEEP_STAGE['max_rs_paths'],
+                        dijkstra_grid=dijkstra_grid) if use_rs else None
+
+                    ok_deep_gate, acts_deep_gate, traj_deep_gate = astar_core.plan_path(
+                        gate_stage_pose[0], gate_stage_pose[1], gate_stage_pose[2],
+                        slalom_prims,
+                        collision_fn=coll_fn, heuristic_fn=deep_gate_heuristic,
+                        rs_expand_fn=deep_gate_rs_expand, stats=st_deep_gate,
+                        _step_limit=LATE_MERGE_DEEP_STAGE['step_limit'],
+                        _expand_limit=LATE_MERGE_DEEP_STAGE['expand_limit'],
+                        _prim_limit=LATE_MERGE_DEEP_STAGE['prim_limit'],
+                        _rs_expand=use_rs,
+                        rs_expansion_radius=max(
+                            rs_expansion_radius,
+                            LATE_MERGE_DEEP_STAGE['rs_radius']),
+                        deadline=deep_gate_deadline)
+                    total_expanded += st_deep_gate.get('expanded', 0)
+                    stats['late_merge_deep_attempted'] = True
+                    stats['late_merge_deep_start_kind'] = 'gate_stage'
+                    stats['late_merge_deep_budget_ms'] = round(deep_gate_budget * 1000.0, 1)
+                    stats['late_merge_deep_expanded'] = st_deep_gate.get('expanded', 0)
+                    stats['late_merge_deep_primitive_count'] = len(slalom_prims)
+
+                    if ok_deep_gate:
+                        if traj_deep_gate is None and not st_deep_gate.get('rs_expansion', False):
+                            gp = st_deep_gate.get('goal_pos')
+                            if gp and obstacles:
+                                gx, gy, gth = gp
+                                in_narrow_goal = (gx <= 2.25 and abs(gy) <= 0.18
+                                                  and abs(gth) <= ALIGN_GOAL_DYAW)
+                                if not in_narrow_goal:
+                                    verify = rs.rs_sample_path_multi(
+                                        gx, gy, gth, RS_GOAL_X, RS_GOAL_Y, RS_GOAL_TH,
+                                        MIN_TURN_RADIUS, step=DT * 0.5, max_paths=10)
+                                    verified = False
+                                    for vt in verify:
+                                        if vt and _check_traj_collision(vt, coll_fn):
+                                            ex, ey, eth = vt[-1]
+                                            if (ex <= 2.25 and abs(ey) <= 0.18
+                                                    and abs(eth) <= ALIGN_GOAL_DYAW):
+                                                traj_deep_gate = vt
+                                                verified = True
+                                                break
+                                    if not verified:
+                                        ok_deep_gate = False
+
+                        if ok_deep_gate:
+                            total_ms = round((time.perf_counter() - t_robust) * 1000.0, 1)
+                            stats.update(st_deep_gate)
+                            stats.update(
+                                two_stage=True, stage1_ms=t1_ms, elapsed_ms=total_ms,
+                                use_rs=use_rs, no_corridor=no_corridor,
+                                level='L3_gate_hint_deep',
+                                recovery_stage='gate_hint_deep',
+                            )
+                            return True, gate_stage_acts + (acts_deep_gate or []), traj_deep_gate
+
+                    gate_remaining = planner_deadline - time.perf_counter()
+
+                if gate_remaining > 1.5 and gate_goal_pure != float('inf'):
+                    gate_grid = DijkstraGrid(
+                        gate_x, gate_y,
+                        inflate_radius=primitives.VEHICLE_HALF_WIDTH + 0.05)
+                    gate_grid.build_map(obstacles, start_x=x0, start_y=y0)
+                    st_gate = {}
+                    gate_deadline = min(time.perf_counter() + min(4.0, gate_remaining),
+                                        planner_deadline)
+                    gate_rs_expand = _make_rs_expand_fn_multi(
+                        coll_fn, max(rs_expansion_radius, 6.0),
+                        max_paths=10, dijkstra_grid=dijkstra_grid) if use_rs else None
+                    gate_heuristic = _make_gate_heuristic_fn_v2(
+                        dijkstra_grid, gate_grid, gate_goal_dist, h_weight=3.0)
+
+                    ok_gate, acts_gate, traj_gate = astar_core.plan_path(
+                        gate_stage_pose[0], gate_stage_pose[1], gate_stage_pose[2], precomp_prim,
+                        collision_fn=coll_fn, heuristic_fn=gate_heuristic,
+                        rs_expand_fn=gate_rs_expand, stats=st_gate,
+                        _expand_limit=25000, _prim_limit=100,
+                        _rs_expand=use_rs,
+                        rs_expansion_radius=max(rs_expansion_radius, 6.0),
+                        deadline=gate_deadline)
+                    total_expanded += st_gate.get('expanded', 0)
+                    stats['late_merge_gate_expanded'] = st_gate.get('expanded', 0)
+                    stats['late_merge_gate_budget_ms'] = round(
+                        max(0.0, gate_deadline - time.perf_counter()) * 1000.0, 1)
+
+                    if ok_gate:
+                        if traj_gate is None and not st_gate.get('rs_expansion', False):
+                            gp = st_gate.get('goal_pos')
+                            if gp and obstacles:
+                                gx, gy, gth = gp
+                                in_narrow_goal = (gx <= 2.25 and abs(gy) <= 0.18
+                                                  and abs(gth) <= ALIGN_GOAL_DYAW)
+                                if not in_narrow_goal:
+                                    verify = rs.rs_sample_path_multi(
+                                        gx, gy, gth, RS_GOAL_X, RS_GOAL_Y, RS_GOAL_TH,
+                                        MIN_TURN_RADIUS, step=DT * 0.5, max_paths=10)
+                                    verified = False
+                                    for vt in verify:
+                                        if vt and _check_traj_collision(vt, coll_fn):
+                                            ex, ey, eth = vt[-1]
+                                            if (ex <= 2.25 and abs(ey) <= 0.18
+                                                    and abs(eth) <= ALIGN_GOAL_DYAW):
+                                                traj_gate = vt
+                                                verified = True
+                                                break
+                                    if not verified:
+                                        ok_gate = False
+
+                        if ok_gate:
+                            total_ms = round((time.perf_counter() - t_robust) * 1000.0, 1)
+                            stats.update(st_gate)
+                            stats.update(
+                                two_stage=True, stage1_ms=t1_ms, elapsed_ms=total_ms,
+                                use_rs=use_rs, no_corridor=no_corridor,
+                                level='L3_gate_hint',
+                                recovery_stage='gate_hint',
+                            )
+                            return True, gate_stage_acts + (acts_gate or []), traj_gate
+
+    # ── Level-2.75: Slalom deep stage for diagnosed late-merge cases ──
+    if (gate_stage_pose is None and l18_gate_hint is not None
+            and obstacles and fast_obstacles is not None
+            and len(fast_obstacles) >= 3):
+        deep_remaining = planner_deadline - time.perf_counter()
+        if deep_remaining > 3.0:
+            if gate_x is None or gate_y is None:
+                gate_x, gate_y, _gate_th = l18_gate_hint
+            if gate_goal_dist is None or gate_goal_pure is None:
+                gate_goal_dist, gate_goal_pure = dijkstra_grid.get_heuristic(gate_x, gate_y)
+
+            deep_start_pose = None
+            deep_prefix_acts = []
+            deep_start_kind = None
+            deep_heuristic = None
+
+            if gate_stage_pose is not None and gate_goal_pure != float('inf'):
+                deep_start_pose = gate_stage_pose
+                deep_prefix_acts = gate_stage_acts or []
+                deep_start_kind = 'gate_stage'
+                deep_heuristic = _make_heuristic_fn_v2(
+                    dijkstra_grid, gate_goal_pure,
+                    allow_uphill=LATE_MERGE_DEEP_STAGE['allow_uphill'],
+                    h_weight=LATE_MERGE_DEEP_STAGE['h_weight'])
+            elif gate_goal_pure != float('inf'):
+                deep_start_pose = (x0, y0, theta0)
+                deep_start_kind = 'origin'
+                gate_grid = DijkstraGrid(
+                    gate_x, gate_y,
+                    inflate_radius=primitives.VEHICLE_HALF_WIDTH + 0.05)
+                gate_grid.build_map(obstacles, start_x=x0, start_y=y0)
+                deep_heuristic = _make_gate_heuristic_fn_v2(
+                    dijkstra_grid, gate_grid, gate_goal_dist,
+                    h_weight=2.2, gate_switch_dist=0.6)
+
+            if deep_start_pose is not None and deep_heuristic is not None:
+                slalom_prims = _get_slalom_primitives()
+                deep_stage_budget = min(8.0, max(3.0, deep_remaining * 0.45))
+                deep_deadline = min(
+                    time.perf_counter() + deep_stage_budget,
+                    planner_deadline)
+                st_deep = {}
+                deep_rs_expand = _make_rs_expand_fn_multi(
+                    coll_fn,
+                    max(rs_expansion_radius, LATE_MERGE_DEEP_STAGE['rs_radius']),
+                    max_paths=LATE_MERGE_DEEP_STAGE['max_rs_paths'],
+                    dijkstra_grid=dijkstra_grid) if use_rs else None
+
+                ok_deep, acts_deep, traj_deep = astar_core.plan_path(
+                    deep_start_pose[0], deep_start_pose[1], deep_start_pose[2],
+                    slalom_prims,
+                    collision_fn=coll_fn, heuristic_fn=deep_heuristic,
+                    rs_expand_fn=deep_rs_expand, stats=st_deep,
+                    _step_limit=LATE_MERGE_DEEP_STAGE['step_limit'],
+                    _expand_limit=LATE_MERGE_DEEP_STAGE['expand_limit'],
+                    _prim_limit=LATE_MERGE_DEEP_STAGE['prim_limit'],
+                    _rs_expand=use_rs,
+                    rs_expansion_radius=max(
+                        rs_expansion_radius,
+                        LATE_MERGE_DEEP_STAGE['rs_radius']),
+                    deadline=deep_deadline)
+                total_expanded += st_deep.get('expanded', 0)
+                stats['late_merge_deep_attempted'] = True
+                stats['late_merge_deep_start_kind'] = deep_start_kind
+                stats['late_merge_deep_budget_ms'] = round(deep_stage_budget * 1000.0, 1)
+                stats['late_merge_deep_expanded'] = st_deep.get('expanded', 0)
+                stats['late_merge_deep_primitive_count'] = len(slalom_prims)
+
+                if ok_deep:
+                    if traj_deep is None and not st_deep.get('rs_expansion', False):
+                        gp = st_deep.get('goal_pos')
+                        if gp and obstacles:
+                            gx, gy, gth = gp
+                            in_narrow_goal = (gx <= 2.25 and abs(gy) <= 0.18
+                                              and abs(gth) <= ALIGN_GOAL_DYAW)
+                            if not in_narrow_goal:
+                                verify = rs.rs_sample_path_multi(
+                                    gx, gy, gth, RS_GOAL_X, RS_GOAL_Y, RS_GOAL_TH,
+                                    MIN_TURN_RADIUS, step=DT * 0.5, max_paths=10)
+                                verified = False
+                                for vt in verify:
+                                    if vt and _check_traj_collision(vt, coll_fn):
+                                        ex, ey, eth = vt[-1]
+                                        if (ex <= 2.25 and abs(ey) <= 0.18
+                                                and abs(eth) <= ALIGN_GOAL_DYAW):
+                                            traj_deep = vt
+                                            verified = True
+                                            break
+                                if not verified:
+                                    ok_deep = False
+
+                    if ok_deep:
+                        total_ms = round((time.perf_counter() - t_robust) * 1000.0, 1)
+                        stats.update(st_deep)
+                        stats.update(
+                            two_stage=True, stage1_ms=t1_ms, elapsed_ms=total_ms,
+                            use_rs=use_rs, no_corridor=no_corridor,
+                            level='L3_gate_hint_deep',
+                            recovery_stage='gate_hint_deep',
+                        )
+                        return True, deep_prefix_acts + (acts_deep or []), traj_deep
 
     # ── Level-3: Fallback from original start (robust + aggressive only) ──
     # Exp-3e: Per-stage time allocation for fallback (robust=7s, aggressive=remaining)

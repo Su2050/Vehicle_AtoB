@@ -21,6 +21,10 @@ _QM1_DETOUR_MAX = 5.0
 _QM2_LATERAL_EXTRA = 3.0
 _QM3_X_BACKTRACK_EXTRA = 3.0
 _QM5_RS_DETOUR_MAX = 4.0
+_MULTI_GATE_MARGIN = 0.45
+_MULTI_GATE_MIN_GAP = 0.35
+_MULTI_GATE_CLEARANCE = 0.08
+_MULTI_GATE_MAX_CANDIDATES = 6
 
 
 def _trace_gradient_path(dg, start_wx, start_wy):
@@ -228,6 +232,112 @@ def _check_traj_collision(traj, collision_fn):
     return True
 
 
+def _normalize_obstacle_bounds(obstacles):
+    bounds = []
+    if not obstacles:
+        return bounds
+    for obs in obstacles:
+        if isinstance(obs, tuple) and len(obs) == 4:
+            min_x, max_x, min_y, max_y = obs
+        else:
+            ox, oy, ow, oh = obs['x'], obs['y'], obs['w'], obs['h']
+            min_x, max_x = min(ox, ox + ow), max(ox, ox + ow)
+            min_y, max_y = min(oy, oy + oh), max(oy, oy + oh)
+        bounds.append((min_x, max_x, min_y, max_y))
+    return bounds
+
+
+def _point_clear_of_obstacles(wx, wy, bounds, clearance=_MULTI_GATE_CLEARANCE):
+    for min_x, max_x, min_y, max_y in bounds:
+        if (min_x - clearance) <= wx <= (max_x + clearance) and (
+                min_y - clearance) <= wy <= (max_y + clearance):
+            return False
+    return True
+
+
+def _build_multi_homotopy_gate_candidates(start_x, start_y, obstacles, deadline=None):
+    """
+    Build a small set of explicit gate candidates for multi-obstacle slalom scenes.
+
+    The default 2D skeleton can commit to a topologically valid but dynamically
+    poor "late merge" route.  These gate candidates bias the coarse path toward
+    merging into the goal corridor earlier without replacing the default route.
+    """
+    bounds = sorted(_normalize_obstacle_bounds(obstacles), key=lambda b: b[2])
+    if len(bounds) < 3:
+        return []
+
+    cluster_min_x = min(b[0] for b in bounds)
+    cluster_max_x = max(b[1] for b in bounds)
+    cluster_min_y = min(b[2] for b in bounds)
+    cluster_max_y = max(b[3] for b in bounds)
+    cluster_mid_x = 0.5 * (cluster_min_x + cluster_max_x)
+
+    gate_y_vals = []
+    for idx in range(len(bounds) - 1):
+        gap_lo = bounds[idx][3]
+        gap_hi = bounds[idx + 1][2]
+        if gap_hi - gap_lo >= _MULTI_GATE_MIN_GAP:
+            gate_y_vals.append(0.5 * (gap_lo + gap_hi))
+    gate_y_vals.extend([
+        cluster_max_y + _MULTI_GATE_MARGIN,
+        cluster_min_y - _MULTI_GATE_MARGIN,
+    ])
+
+    gate_x_vals = []
+    for gx in [cluster_max_x + 0.35, cluster_mid_x, cluster_min_x + 0.15]:
+        if RS_GOAL_X + 0.45 < gx < (start_x - 0.05):
+            gate_x_vals.append(gx)
+
+    candidate_specs = []
+    seen = set()
+    for gate_x in gate_x_vals:
+        for gate_y in gate_y_vals:
+            gate_y = max(-5.0, min(5.0, gate_y))
+            key = (round(gate_x, 2), round(gate_y, 2))
+            if key in seen:
+                continue
+            seen.add(key)
+            if not _point_clear_of_obstacles(gate_x, gate_y, bounds):
+                continue
+
+            raw = [
+                (start_x, start_y),
+                (gate_x, gate_y),
+                (RS_GOAL_X, RS_GOAL_Y),
+            ]
+            score = (
+                abs(gate_y - RS_GOAL_Y) * 2.0
+                + max(0.0, start_x - gate_x) * 0.2
+                + abs(gate_y - start_y) * 0.1
+            )
+            candidate_specs.append({
+                'raw': raw,
+                'source': 'multi_gate',
+                'gate': (round(gate_x, 3), round(gate_y, 3), 0.0),
+                'score': round(score, 3),
+            })
+
+    candidate_specs.sort(key=lambda c: (c['score'], len(c['raw'])))
+    return candidate_specs[:_MULTI_GATE_MAX_CANDIDATES]
+
+
+def _raw_path_has_late_merge(raw_path, start_y, merge_y=0.6, late_x=None):
+    """
+    Detect coarse routes that stay on the start side too long before entering
+    the goal corridor.
+    """
+    if not raw_path or len(raw_path) < 3 or abs(start_y) <= merge_y:
+        return False
+    if late_x is None:
+        late_x = RS_GOAL_X + 0.8
+
+    for wx, wy in raw_path:
+        if abs(wy) <= merge_y:
+            return wx <= late_x
+    return False
+
+
 def _try_rs_connect(x1, y1, th1, x2, y2, th2, collision_fn,
                     max_paths=10, step=None):
     """
@@ -273,13 +383,18 @@ def _try_connect_with_heading_variants(x1, y1, th1, x2, y2, th2_nom,
     return best_traj, best_th2
 
 
-def _stitch_waypoints(waypoints, start_th, collision_fn, max_rs_paths, deadline=None):
+def _stitch_waypoints(waypoints, start_th, collision_fn, max_rs_paths, deadline=None,
+                      diagnostics=None):
     """
     Stitch waypoints with RS segments. Last segment targets exact goal pose.
     If the last segment fails, backtrack to earlier waypoints and scan for
     heading combinations that enable goal connection.
     Returns (success, trajectory).
     """
+    if diagnostics is not None:
+        diagnostics.clear()
+        diagnostics['waypoint_count'] = len(waypoints)
+
     nominal_headings = _assign_headings(waypoints)
     full_traj = []
     cur_th = start_th
@@ -288,6 +403,8 @@ def _stitch_waypoints(waypoints, start_th, collision_fn, max_rs_paths, deadline=
 
     for i in range(len(waypoints) - 1):
         if deadline is not None and time.perf_counter() > deadline:
+            if diagnostics is not None:
+                diagnostics['deadline_hit'] = True
             return False, None
         wx1, wy1 = waypoints[i]
         wx2, wy2 = waypoints[i + 1]
@@ -319,10 +436,19 @@ def _stitch_waypoints(waypoints, start_th, collision_fn, max_rs_paths, deadline=
 
             # Backtrack fallback: redo last k segments with goal-viable headings
             if seg is None:
+                if diagnostics is not None:
+                    diagnostics.update({
+                        'failed_seg_idx': i,
+                        'late_merge_fail': (i > 0 or len(full_traj) > 0),
+                        'failed_from': (wx1, wy1, cur_th),
+                        'failed_to': (wx2, wy2, target_th),
+                    })
                 bt = _try_backtrack_to_goal(
                     waypoints, wp_states, i, collision_fn,
                     max_rs_paths, deadline)
                 if bt is not None:
+                    if diagnostics is not None:
+                        diagnostics['backtrack_success'] = True
                     trunc_len, bt_segs = bt
                     full_traj = full_traj[:trunc_len]
                     for s in bt_segs:
@@ -331,6 +457,8 @@ def _stitch_waypoints(waypoints, start_th, collision_fn, max_rs_paths, deadline=
                         ex, ey, eth = full_traj[-1]
                         if ex <= 2.25 and abs(ey) <= 0.18 and abs(eth) <= ALIGN_GOAL_DYAW:
                             return True, full_traj
+                    if diagnostics is not None:
+                        diagnostics['backtrack_failed'] = True
                     return False, None
 
             actual_th = target_th
@@ -340,6 +468,13 @@ def _stitch_waypoints(waypoints, start_th, collision_fn, max_rs_paths, deadline=
                 collision_fn, max_paths=max_rs_paths, deadline=deadline)
 
         if seg is None:
+            if diagnostics is not None:
+                diagnostics.update({
+                    'failed_seg_idx': i,
+                    'late_merge_fail': False,
+                    'failed_from': (wx1, wy1, cur_th),
+                    'failed_to': (wx2, wy2, target_th),
+                })
             return False, None
 
         full_traj.extend(seg)
@@ -472,7 +607,7 @@ _HEADING_PULL_DIST = 1.5
 
 def plan_2d_fallback(dijkstra_grid, start_x, start_y, start_th,
                      collision_fn, spacing=1.5, max_rs_paths=12,
-                     obstacles=None, deadline=None):
+                     obstacles=None, deadline=None, diag_out=None):
     """
     2D skeleton fallback planner with heading-aware candidate selection.
     Optimized with aggressive deadline checks for speed.
@@ -483,9 +618,12 @@ def plan_2d_fallback(dijkstra_grid, start_x, start_y, start_th,
 
     raw_path = _trace_gradient_path(dijkstra_grid, start_x, start_y)
 
+    if diag_out is not None:
+        diag_out.clear()
+
     candidates = []
     if len(raw_path) >= 2:
-        candidates.append(raw_path)
+        candidates.append({'raw': raw_path, 'source': 'gradient'})
 
     # Early exit if no path found
     if not candidates and not obstacles:
@@ -509,7 +647,7 @@ def plan_2d_fallback(dijkstra_grid, start_x, start_y, start_th,
                 start_x, start_y, RS_GOAL_X, RS_GOAL_Y, obstacles,
                 inflate_radius=inf_r, soft_radius=soft_r)
             if len(alt) >= 2:
-                candidates.append(alt)
+                candidates.append({'raw': alt, 'source': f'alt_{inf_r:.2f}'})
 
     # Skip heading-biased variants if deadline is tight
     if deadline is None or time.perf_counter() + 1.0 < deadline:
@@ -525,7 +663,10 @@ def plan_2d_fallback(dijkstra_grid, start_x, start_y, start_th,
                     px, py, RS_GOAL_X, RS_GOAL_Y, obstacles,
                     inflate_radius=0.32, soft_radius=MIN_TURN_RADIUS * 0.9)
                 if len(pull_path) >= 2:
-                    candidates.append([(start_x, start_y)] + pull_path)
+                    candidates.append({
+                        'raw': [(start_x, start_y)] + pull_path,
+                        'source': 'heading_pull',
+                    })
 
     # Try lower spacing first to reduce lateral drift in narrow passages.
     spacings = []
@@ -542,18 +683,36 @@ def plan_2d_fallback(dijkstra_grid, start_x, start_y, start_th,
     # thresholds (e.g. S03 behind-wall cases with long detours).
     fallback_traj = None
     fallback_score = float('inf')
-    for raw in candidates:
-        if deadline is not None and time.perf_counter() > deadline:
-            break
-        for sp in spacings:
+    late_merge_count = 0
+    late_merge_geom_count = 0
+    gate_candidates = []
+
+    def _try_candidate_family(candidate_items, spacing_opts):
+        nonlocal best_traj, best_score, best_len
+        nonlocal fallback_traj, fallback_score, late_merge_count, late_merge_geom_count
+        if not candidate_items:
+            return
+        for item in candidate_items:
             if deadline is not None and time.perf_counter() > deadline:
                 break
-            wps = _simplify_path(raw, min_spacing=sp)
-            if len(wps) < 2:
-                continue
-            ok, traj = _stitch_waypoints(
-                wps, start_th, collision_fn, max_rs_paths, deadline=deadline)
-            if ok:
+            raw = item['raw']
+            if item.get('source') != 'multi_gate' and _raw_path_has_late_merge(raw, start_y):
+                late_merge_geom_count += 1
+            for sp in spacing_opts:
+                if deadline is not None and time.perf_counter() > deadline:
+                    break
+                wps = _simplify_path(raw, min_spacing=sp)
+                if len(wps) < 2:
+                    continue
+                stitch_diag = {}
+                ok, traj = _stitch_waypoints(
+                    wps, start_th, collision_fn, max_rs_paths,
+                    deadline=deadline, diagnostics=stitch_diag)
+                if not ok:
+                    if stitch_diag.get('late_merge_fail'):
+                        late_merge_count += 1
+                    continue
+
                 pass_qm, score, qm = _evaluate_traj_quality(start_x, start_y, traj)
                 tlen = qm.get('traj_len', _trajectory_length(traj))
                 if pass_qm:
@@ -562,18 +721,62 @@ def plan_2d_fallback(dijkstra_grid, start_x, start_y, start_th,
                         best_traj = traj
                         best_score = score
                         best_len = tlen
+                        if diag_out is not None and item.get('gate') is not None:
+                            diag_out['used_multi_homotopy_gate'] = True
+                            diag_out['selected_gate'] = item['gate']
                 else:
-                    # Keep as fallback (penalised score, but still usable)
                     if score < fallback_score - 1e-9:
                         fallback_traj = traj
                         fallback_score = score
+                        if diag_out is not None and item.get('gate') is not None:
+                            diag_out['used_multi_homotopy_gate'] = True
+                            diag_out['selected_gate'] = item['gate']
+
+    _try_candidate_family(candidates, spacings)
 
     if best_traj is not None:
+        if diag_out is not None:
+            diag_out['late_merge_count'] = late_merge_count
+            diag_out['late_merge_geometry_count'] = late_merge_geom_count
+            diag_out['late_merge_detected'] = (
+                late_merge_count >= 2 or late_merge_geom_count >= 1)
         return True, best_traj
+
+    late_merge_detected = (late_merge_count >= 2 or late_merge_geom_count >= 1)
+    if late_merge_detected and obstacles and len(obstacles) >= 3:
+        gate_candidates = _build_multi_homotopy_gate_candidates(
+            start_x, start_y, obstacles, deadline=deadline)
+        for item in gate_candidates:
+            gate_x, gate_y, _gate_th = item['gate']
+            _gate_h, gate_pure = dijkstra_grid.get_heuristic(gate_x, gate_y)
+            item['goal_pure'] = gate_pure
+        gate_candidates.sort(
+            key=lambda item: (
+                item.get('goal_pure', float('inf')) == float('inf'),
+                item.get('goal_pure', float('inf')),
+                item.get('score', float('inf')),
+            ))
+        if diag_out is not None:
+            diag_out['late_merge_detected'] = True
+            diag_out['late_merge_count'] = late_merge_count
+            diag_out['late_merge_geometry_count'] = late_merge_geom_count
+            diag_out['gate_candidate_count'] = len(gate_candidates)
+            if gate_candidates:
+                diag_out['suggested_gate'] = gate_candidates[0]['gate']
+        _try_candidate_family(gate_candidates, spacings)
+        if best_traj is not None:
+            return True, best_traj
 
     # Retry with reduced inflation only if we have time
     if obstacles:
         if deadline is not None and time.perf_counter() > deadline - 1.0:
+            if diag_out is not None:
+                diag_out['late_merge_count'] = late_merge_count
+                diag_out['late_merge_geometry_count'] = late_merge_geom_count
+                diag_out['late_merge_detected'] = late_merge_detected
+                if gate_candidates:
+                    diag_out['gate_candidate_count'] = len(gate_candidates)
+                    diag_out.setdefault('suggested_gate', gate_candidates[0]['gate'])
             return False, None  # Skip retry if low on time
 
         candidates2 = []
@@ -581,42 +784,43 @@ def plan_2d_fallback(dijkstra_grid, start_x, start_y, start_th,
             start_x, start_y, RS_GOAL_X, RS_GOAL_Y, obstacles,
             inflate_radius=primitives.VEHICLE_HALF_WIDTH, soft_radius=MIN_TURN_RADIUS * 0.7)
         if len(alt2) >= 2:
-            candidates2.append(alt2)
+            candidates2.append({'raw': alt2, 'source': 'alt_reduced'})
 
         fine_spacings = [max(0.7, spacing * 0.5), max(0.8, spacing * 0.7), spacing]
-        for raw in candidates2:
-            if deadline is not None and time.perf_counter() > deadline:
-                break
-            for sp in fine_spacings:
-                if deadline is not None and time.perf_counter() > deadline:
-                    break
-                wps = _simplify_path(raw, min_spacing=sp)
-                if len(wps) < 2:
-                    continue
-                ok, traj = _stitch_waypoints(
-                    wps, start_th, collision_fn, max_rs_paths, deadline=deadline)
-                if ok:
-                    pass_qm, score, qm = _evaluate_traj_quality(start_x, start_y, traj)
-                    tlen = qm.get('traj_len', _trajectory_length(traj))
-                    if pass_qm:
-                        if (score < best_score - 1e-9) or (
-                                abs(score - best_score) <= 1e-9 and tlen < best_len):
-                            best_traj = traj
-                            best_score = score
-                            best_len = tlen
-                    else:
-                        if score < fallback_score - 1e-9:
-                            fallback_traj = traj
-                            fallback_score = score
+        _try_candidate_family(candidates2, fine_spacings)
 
         if best_traj is not None:
+            if diag_out is not None:
+                diag_out['late_merge_count'] = late_merge_count
+                diag_out['late_merge_geometry_count'] = late_merge_geom_count
+                diag_out['late_merge_detected'] = (
+                    late_merge_count >= 2 or late_merge_geom_count >= 1)
+                if gate_candidates:
+                    diag_out['gate_candidate_count'] = len(gate_candidates)
+                    diag_out.setdefault('suggested_gate', gate_candidates[0]['gate'])
             return True, best_traj
 
     # Return the best non-QM fallback if no QM-passing path was found.
     # The caller (planner) applies its own quality gate and may still accept it.
     if fallback_traj is not None:
+        if diag_out is not None:
+            diag_out['late_merge_count'] = late_merge_count
+            diag_out['late_merge_geometry_count'] = late_merge_geom_count
+            diag_out['late_merge_detected'] = (
+                late_merge_count >= 2 or late_merge_geom_count >= 1)
+            if gate_candidates:
+                diag_out['gate_candidate_count'] = len(gate_candidates)
+                diag_out.setdefault('suggested_gate', gate_candidates[0]['gate'])
         return True, fallback_traj
 
+    if diag_out is not None:
+        diag_out['late_merge_count'] = late_merge_count
+        diag_out['late_merge_geometry_count'] = late_merge_geom_count
+        diag_out['late_merge_detected'] = (
+            late_merge_count >= 2 or late_merge_geom_count >= 1)
+        if gate_candidates:
+            diag_out['gate_candidate_count'] = len(gate_candidates)
+            diag_out.setdefault('suggested_gate', gate_candidates[0]['gate'])
     return False, None
 
 
