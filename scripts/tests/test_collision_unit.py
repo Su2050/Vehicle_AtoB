@@ -32,11 +32,11 @@ def test_obstacle_collision():
 def test_obstacle_edge_safe():
     """多圆模型：所有碰撞圆与障碍物距离均 > HALF_WIDTH(0.25m)，应返回 (True, 'OK')
     障碍物: x∈[5,6], y∈[0,1]
-    叉车在 (2.2, 0.5, 0.0)，th=0 → 前端最远圆 offset=-1.87 at (4.07, 0.5)
-    距离: dx=5.0-4.07=0.93 > 0.25 → safe
-    (使用 x=2.2 避开走廊安全约束 nx<=2.05)"""
+    叉车在 (3.2, 0.5, 0.0)，th=0 → 前端最远圆 at (4.03, 0.5)
+    距离: dx=5.0-4.03=0.97 > 0.25 → safe
+    (使用 x=3.2 确保多圆全部位于 corridor 之外)"""
     obs = [{'x': 5.0, 'y': 0.0, 'w': 1.0, 'h': 1.0}]
-    ok, reason = check_collision(2.2, 0.5, 0.0, obstacles=obs)
+    ok, reason = check_collision(3.2, 0.5, 0.0, obstacles=obs)
     assert ok is True
     assert reason == 'OK'
 
@@ -51,6 +51,13 @@ def test_corridor_wall_violation():
     # sc is 0.15 for nx <= 1.87
     # tip_lat = ny - 1.87 * sin_nth. If ny=0.5, nth=0, tip_lat=0.5 > 0.15 -> False
     ok, reason = check_collision(1.5, 0.5, 0.0)
+    assert ok is False
+    assert reason == 'CORRIDOR'
+
+
+def test_corridor_checks_all_vehicle_circles():
+    """走廊约束应与多圆模型一致，不能只检查前圆。"""
+    ok, reason = check_collision(1.95, -0.70, math.pi / 2)
     assert ok is False
     assert reason == 'CORRIDOR'
 

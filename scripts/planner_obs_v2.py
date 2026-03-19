@@ -326,6 +326,7 @@ def _path_goes_behind_wall(traj):
 _PATH_LENGTH_RATIO_MAX = 3.0
 _PATH_LATERAL_EXTRA_MAX = 2.0
 _QUALITY_EPS = 1e-3
+_L15_CANDIDATE_KEEP = 5
 _QM1_DETOUR_MAX = 5.0
 _QM2_LATERAL_EXTRA = 3.0
 _QM3_X_BACKTRACK_EXTRA = 3.0
@@ -559,6 +560,28 @@ def _path_is_unreasonable(traj, sx, sy,
     return False
 
 
+def _score_l15_candidate(traj, sx, sy):
+    """
+    Rank L1.5 bypass trajectories by geometric quality instead of whichever
+    milestone happens to be found first.
+    """
+    path_len = _trajectory_length(traj)
+    direct_goal = math.hypot(sx - RS_GOAL_X, sy - RS_GOAL_Y)
+    eff_direct = max(direct_goal, 2.0)
+    detour_ratio = path_len / eff_direct
+    max_abs_y = max(abs(p[1]) for p in traj) if traj else max(abs(sy), abs(RS_GOAL_Y))
+    extra_lat = max(0.0, max_abs_y - max(abs(sy), abs(RS_GOAL_Y)))
+    max_x = max(p[0] for p in traj) if traj else sx
+    x_overshoot = max(0.0, max_x - max(sx, RS_GOAL_X))
+    score = detour_ratio * 4.0 + extra_lat * 3.0 + x_overshoot * 1.5 + path_len * 0.1
+    return score, {
+        'path_len': round(path_len, 3),
+        'detour_ratio': round(detour_ratio, 3),
+        'extra_lat': round(extra_lat, 3),
+        'x_overshoot': round(x_overshoot, 3),
+    }
+
+
 def _try_milestone_rs_bypass(sx, sy, sth, obstacles, collision_fn,
                               fast_obstacles=None, no_corridor=False,
                               max_paths=8, max_milestones=20, deadline=None,
@@ -577,33 +600,55 @@ def _try_milestone_rs_bypass(sx, sy, sth, obstacles, collision_fn,
     coll_relaxed = collision_fn
 
     step = DT * 0.5
-    best_traj = None
-    best_len = float('inf')
     direct_goal = math.hypot(sx - RS_GOAL_X, sy - RS_GOAL_Y)
+    two_seg_candidates = []
+    three_seg_candidates = []
 
-    def _store_choice(mx, my, mth, tag, pattern, traj):
+    def _store_choice(candidate_bucket):
         if diag_out is None:
             return
-        path_len = _trajectory_length(traj)
+        best = candidate_bucket[0]
         diag_out.update({
-            'l15_selected_milestone': (round(mx, 2), round(my, 2), round(mth, 3)),
-            'l15_selected_milestone_tag': tag,
-            'l15_selected_pattern': pattern,
-            'l15_path_len': round(path_len, 3),
-            'l15_direct_ratio': round(path_len / max(direct_goal, 1e-6), 3),
+            'l15_selected_milestone': best['milestone'],
+            'l15_selected_milestone_tag': best['tag'],
+            'l15_selected_pattern': best['pattern'],
+            'l15_path_len': best['metrics']['path_len'],
+            'l15_direct_ratio': round(best['metrics']['path_len'] / max(direct_goal, 1e-6), 3),
+            'l15_candidate_count': len(candidate_bucket),
+            'l15_selected_score': round(best['score'], 3),
         })
+
+    def _consider_candidate(bucket, mx, my, mth, tag, pattern, traj):
+        score, metrics = _score_l15_candidate(traj, sx, sy)
+        bucket.append({
+            'score': score,
+            'metrics': metrics,
+            'traj': traj,
+            'milestone': (round(mx, 2), round(my, 2), round(mth, 3)),
+            'tag': tag,
+            'pattern': pattern,
+        })
+        bucket.sort(key=lambda item: (item['score'], item['metrics']['path_len'], len(item['traj'])))
+        if len(bucket) > _L15_CANDIDATE_KEEP:
+            bucket.pop()
+
+    def _finish(bucket):
+        if not bucket:
+            return False, None, diag_out
+        _store_choice(bucket)
+        return True, bucket[0]['traj'], diag_out
 
     # --- Try 2-segment: start → wp → goal ---
     for mx, my, mth, tag in milestones[:max_milestones]:
         if deadline is not None and time.perf_counter() > deadline:
-            return False, None, diag_out  # Hard exit on deadline
+            return _finish(two_seg_candidates)
         seg1_list = rs.rs_sample_path_multi(
             sx, sy, sth, mx, my, mth,
             MIN_TURN_RADIUS, step=step, max_paths=max_paths)
 
         for seg1 in seg1_list:
             if deadline is not None and time.perf_counter() > deadline:
-                return False, None, diag_out
+                return _finish(two_seg_candidates)
             if not seg1 or not _check_traj_collision(seg1, coll_relaxed):
                 continue
 
@@ -613,26 +658,17 @@ def _try_milestone_rs_bypass(sx, sy, sth, obstacles, collision_fn,
 
             for seg2 in seg2_list:
                 if deadline is not None and time.perf_counter() > deadline:
-                    return False, None, diag_out
+                    return _finish(two_seg_candidates)
                 if not seg2 or not _check_traj_collision(seg2, collision_fn):
                     continue
                 ex, ey, eth = seg2[-1]
                 if not (ex <= 2.25 and abs(ey) <= 0.18
                         and abs(eth) <= ALIGN_GOAL_DYAW):
                     continue
-                total_len = len(seg1) + len(seg2)
-                if total_len < best_len:
-                    best_len = total_len
-                    best_traj = seg1 + seg2
-                    _store_choice(mx, my, mth, tag, '2seg', best_traj)
-                    # Exp-7: Return first viable 2-seg path immediately.
-                    # Critical fix: without early exit, the exhaustive search
-                    # across 30+ milestones causes deadline timeout, which
-                    # then DISCARDS best_traj via `return False, None`.
-                    return True, best_traj, diag_out
+                _consider_candidate(two_seg_candidates, mx, my, mth, tag, '2seg', seg1 + seg2)
 
-    if best_traj is not None:
-        return True, best_traj, diag_out
+    if two_seg_candidates:
+        return _finish(two_seg_candidates)
 
     # --- Try 3-segment: start → wp_bypass → wp_return → goal ---
     # Reduced return waypoints for speed
@@ -641,7 +677,7 @@ def _try_milestone_rs_bypass(sx, sy, sth, obstacles, collision_fn,
     ]
     for mx, my, mth, tag in milestones[:max_milestones]:
         if deadline is not None and time.perf_counter() > deadline:
-            return False, None, diag_out
+            return _finish(three_seg_candidates)
         seg1_list = rs.rs_sample_path_multi(
             sx, sy, sth, mx, my, mth,
             MIN_TURN_RADIUS, step=step, max_paths=4)  # Reduced from 6
@@ -651,13 +687,13 @@ def _try_milestone_rs_bypass(sx, sy, sth, obstacles, collision_fn,
             continue
         for rwx, rwy, rwth in return_wps:
             if deadline is not None and time.perf_counter() > deadline:
-                return False, None, diag_out
+                return _finish(three_seg_candidates)
             seg2_list = rs.rs_sample_path_multi(
                 mx, my, mth, rwx, rwy, rwth,
                 MIN_TURN_RADIUS, step=step, max_paths=6)  # Reduced from 12
             for seg2 in seg2_list:
                 if deadline is not None and time.perf_counter() > deadline:
-                    return False, None, diag_out
+                    return _finish(three_seg_candidates)
                 if not seg2 or not _check_traj_collision(seg2, coll_relaxed):
                     continue
                 seg3_list = rs.rs_sample_path_multi(
@@ -665,24 +701,17 @@ def _try_milestone_rs_bypass(sx, sy, sth, obstacles, collision_fn,
                     MIN_TURN_RADIUS, step=step, max_paths=3)  # Reduced from 5
                 for seg3 in seg3_list:
                     if deadline is not None and time.perf_counter() > deadline:
-                        return False, None, diag_out
+                        return _finish(three_seg_candidates)
                     if not seg3 or not _check_traj_collision(seg3, collision_fn):
                         continue
                     ex, ey, eth = seg3[-1]
                     if not (ex <= 2.25 and abs(ey) <= 0.18
                             and abs(eth) <= ALIGN_GOAL_DYAW):
                         continue
-                    total_len = len(seg1_ok[0]) + len(seg2) + len(seg3)
-                    if total_len < best_len:
-                        best_len = total_len
-                        best_traj = seg1_ok[0] + seg2 + seg3
-                        _store_choice(mx, my, mth, tag, '3seg', best_traj)
-                        # Exp-7: Early exit for 3-seg path too
-                        return True, best_traj, diag_out
+                    _consider_candidate(three_seg_candidates, mx, my, mth, tag, '3seg',
+                                        seg1_ok[0] + seg2 + seg3)
 
-    if best_traj is not None:
-        return True, best_traj, diag_out
-    return False, None, diag_out
+    return _finish(three_seg_candidates)
 
 
 # ═══════════════════════════════════════════════════════════════════════

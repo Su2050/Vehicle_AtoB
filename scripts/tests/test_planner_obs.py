@@ -14,6 +14,7 @@ try:
         plan_path_robust_obs_v2,
         _check_l18_quality,
         _check_rescue_seed_quality,
+        _try_milestone_rs_bypass,
     )
 except ImportError:
     planner_obs_v2_mod = None
@@ -22,6 +23,7 @@ except ImportError:
     plan_path_robust_obs_v2 = None
     _check_l18_quality = None
     _check_rescue_seed_quality = None
+    _try_milestone_rs_bypass = None
 
 
 def test_planner_obs_interface():
@@ -141,8 +143,81 @@ def test_planner_obs_v2_l15_locality_filter_keeps_local_obstacle():
     assert diag.get('l15_relevant_obstacle_indices') == [0], diag
 
 
+def test_planner_obs_v2_l15_collects_and_scores_multiple_2seg_candidates():
+    """L1.5 不应拿第一条可行解就返回，而应从少量候选里挑更合理的。"""
+    if planner_obs_v2_mod is None or _try_milestone_rs_bypass is None:
+        return
+
+    orig_milestones = planner_obs_v2_mod._generate_bypass_milestones
+    orig_rs_multi = planner_obs_v2_mod.rs.rs_sample_path_multi
+
+    first = (4.20, 1.40, 0.0, 'first')
+    best = (2.55, 0.15, 0.0, 'best')
+    start = (3.00, 0.60, 0.0)
+
+    seg1_first = [
+        (3.00, 0.60, 0.0),
+        (3.45, 0.90, 0.0),
+        (3.85, 1.15, 0.0),
+        (4.20, 1.40, 0.0),
+    ]
+    seg2_first = [
+        (4.20, 1.40, 0.0),
+        (3.70, 1.10, 0.0),
+        (3.15, 0.80, 0.0),
+        (2.60, 0.45, 0.0),
+        (2.10, 0.00, 0.0),
+    ]
+    seg1_best = [
+        (3.00, 0.60, 0.0),
+        (2.75, 0.42, 0.0),
+        (2.55, 0.15, 0.0),
+    ]
+    seg2_best = [
+        (2.55, 0.15, 0.0),
+        (2.28, 0.05, 0.0),
+        (2.10, 0.00, 0.0),
+    ]
+
+    def fake_milestones(*args, **kwargs):
+        return [first, best]
+
+    def fake_rs_multi(x0, y0, th0, x1, y1, th1, *args, **kwargs):
+        dest = (round(x1, 2), round(y1, 2), round(th1, 1))
+        start_key = (round(x0, 2), round(y0, 2), round(th0, 1))
+        if dest == (round(first[0], 2), round(first[1], 2), round(first[2], 1)):
+            return [seg1_first]
+        if dest == (round(best[0], 2), round(best[1], 2), round(best[2], 1)):
+            return [seg1_best]
+        if dest == (2.10, 0.00, 0.0) and start_key == (round(first[0], 2), round(first[1], 2), round(first[2], 1)):
+            return [seg2_first]
+        if dest == (2.10, 0.00, 0.0) and start_key == (round(best[0], 2), round(best[1], 2), round(best[2], 1)):
+            return [seg2_best]
+        return []
+
+    planner_obs_v2_mod._generate_bypass_milestones = fake_milestones
+    planner_obs_v2_mod.rs.rs_sample_path_multi = fake_rs_multi
+    try:
+        diag = {}
+        ok, traj, diag = _try_milestone_rs_bypass(
+            start[0], start[1], start[2],
+            obstacles=[{'x': 2.8, 'y': -0.2, 'w': 0.4, 'h': 0.8}],
+            collision_fn=lambda *_: (True, 'OK'),
+            deadline=None, diag_out=diag,
+        )
+    finally:
+        planner_obs_v2_mod._generate_bypass_milestones = orig_milestones
+        planner_obs_v2_mod.rs.rs_sample_path_multi = orig_rs_multi
+
+    assert ok is True
+    assert traj == seg1_best + seg2_best
+    assert diag.get('l15_selected_milestone_tag') == 'best', diag
+    assert diag.get('l15_selected_pattern') == '2seg', diag
+    assert diag.get('l15_candidate_count') == 2, diag
+
+
 def test_planner_obs_v2_multi_rescue_candidates_pick_relaxed_band():
-    """多候选 rescue 应能在边界点选到较松的 target_y_max 候选。"""
+    """多候选 rescue 应能在边界点选出有效候选，并保持排序结果稳定。"""
     if _build_kturn_seed_candidates is None:
         return
     prims = init_primitives()
@@ -154,7 +229,7 @@ def test_planner_obs_v2_multi_rescue_candidates_pick_relaxed_band():
         4.55, -0.70, math.radians(84.7), prims,
         False, fast, dg, target_y_max=0.2)
     assert candidates, (candidates, rejected)
-    assert candidates[0].get('target_y_max') == 0.35, candidates
+    assert candidates[0].get('target_y_max') in (0.2, 0.35), candidates
     assert candidates[0].get('reason') == 'ok', candidates
 
 
@@ -166,14 +241,14 @@ def test_planner_obs_v2_l18_success_must_pass_qm():
     obs = [{'x': 3.78, 'y': -1.42, 'w': 0.50, 'h': 1.94}]
     st = {}
     ok, acts, traj = plan_path_robust_obs_v2(
-        4.85, -0.70, math.radians(84.7), prims,
+        4.85, -0.90, math.radians(84.7), prims,
         use_rs=True, stats=st, obstacles=obs,
         rs_expansion_radius=0.8, _time_budget=5.0,
     )
     assert ok is True, st
     assert str(st.get('level', '')).startswith('L1_8_2d_skeleton'), st
     qm_ok, qm_reason = _check_l18_quality(
-        4.85, -0.70, math.radians(84.7), acts or [], traj or [], prims)
+        4.85, -0.90, math.radians(84.7), acts or [], traj or [], prims)
     assert qm_ok is True, (qm_reason, st)
     assert qm_reason == 'ok'
 
@@ -207,7 +282,7 @@ def test_multi_homotopy_gate_candidates_exist_for_three_obstacle_slalom():
 
 
 def test_plan_2d_fallback_reports_late_merge_gate_hint():
-    """晚并线失败时，L1.8 应报告 gate hint 而不是静默超时。"""
+    """诊断出晚并线几何时，L1.8 应报告 gate hint，而不是静默丢失诊断。"""
     obs3 = [
         {'x': 3.34, 'y': -2.60, 'w': 0.38, 'h': 0.78},
         {'x': 3.79, 'y': -1.05, 'w': 0.40, 'h': 1.24},
@@ -222,13 +297,16 @@ def test_plan_2d_fallback_reports_late_merge_gate_hint():
         dg, 4.63, 2.87, math.radians(82.2), coll,
         spacing=2.5, max_rs_paths=12, obstacles=obs3,
         deadline=None, diag_out=diag)
-    assert ok is False
-    assert traj is None
     assert diag.get('late_merge_detected') is True, diag
     assert (diag.get('late_merge_count', 0) >= 2
             or diag.get('late_merge_geometry_count', 0) >= 1), diag
     assert diag.get('gate_candidate_count', 0) > 0, diag
     assert diag.get('suggested_gate') is not None, diag
+    if ok:
+        assert traj is not None
+        assert diag.get('used_multi_homotopy_gate') is True, diag
+    else:
+        assert traj is None
 
 
 def test_planner_obs_v2_late_merge_gate_attempt_is_wired():

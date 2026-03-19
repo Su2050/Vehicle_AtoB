@@ -71,14 +71,19 @@ def check_collision(nx, ny, nth, sin_nth=None, cos_nth=None,
 
     # 安全走廊门控 (safe_corridor) —— 可选关闭
     if not no_corridor:
-        if nx <= 2.05:
-            if sin_nth is None:
-                sin_nth = math.sin(nth)
-            # Check the front of the vehicle (use the first/smallest offset)
-            front_offset = min(primitives.VEHICLE_CHECK_OFFSETS)
-            tip_lat = ny - front_offset * sin_nth
-            sc = (0.15 + (nx - 1.87) * 0.8) if nx > 1.87 else 0.15
-            if tip_lat > sc or tip_lat < -sc:
+        if sin_nth is None:
+            sin_nth = math.sin(nth)
+        if cos_nth is None:
+            cos_nth = math.cos(nth)
+
+        corridor_x_limit = 2.05
+        for offset in primitives.VEHICLE_CHECK_OFFSETS:
+            px = nx - offset * cos_nth
+            if px > corridor_x_limit:
+                continue
+            py = ny - offset * sin_nth
+            sc = (0.15 + (px - 1.87) * 0.8) if px > 1.87 else 0.15
+            if py > sc or py < -sc:
                 return False, 'CORRIDOR'
 
     return True, 'OK'
