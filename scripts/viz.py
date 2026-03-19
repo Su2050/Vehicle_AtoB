@@ -124,6 +124,7 @@ class App:
 
         self.path = []          # raw discrete trajectory
         self.smooth_path = []   # B-spline smoothed trajectory
+        self.smooth_skip_reason = None
         self.rs_traj = []       # RS analytic expansion segment (tail of path)
         self.stage_split_idx = None  # index in self.path where Stage-2 starts
         self.planning = False
@@ -151,6 +152,69 @@ class App:
         self.drawing_obs = False
         self.obs_start_pt = None
         self.obs_current_pt = None
+
+    def _planner_tags(self):
+        st = self.last_stats or {}
+        level = st.get('level', '') or ''
+        tags = []
+
+        if level == 'L1_pure_rs':
+            tags.append("Pure RS")
+        elif level == 'L1_5_milestone_rs':
+            tags.append("Milestone RS")
+        elif level.startswith('L1_8_2d_skeleton'):
+            tags.append("2D Skeleton")
+        elif st.get('rs_expansion'):
+            tags.append("RS Expand")
+        elif self.rs_traj:
+            tags.append("Goal RS")
+
+        if st.get('simple_obs_kturn_rescue'):
+            tags.append("K-turn Rescue")
+        if st.get('two_stage'):
+            tags.append("2-Stage")
+        if self.smooth_skip_reason:
+            tags.append("Raw Only")
+        return tags
+
+    def _count_motion_reversals(self, traj):
+        reversals = 0
+        last_sign = 0
+        for i in range(1, len(traj)):
+            x0, y0, th0 = traj[i - 1]
+            x1, y1, _ = traj[i]
+            dx = x1 - x0
+            dy = y1 - y0
+            ds = math.hypot(dx, dy)
+            if ds < 1e-6:
+                continue
+            # Vehicle forward direction points toward (-cos(th), -sin(th)).
+            proj = dx * (-math.cos(th0)) + dy * (-math.sin(th0))
+            if abs(proj) < 1e-6:
+                continue
+            sign = 1 if proj > 0.0 else -1
+            if last_sign and sign != last_sign:
+                reversals += 1
+            last_sign = sign
+        return reversals
+
+    def _max_path_jump(self, traj):
+        max_jump = 0.0
+        for i in range(1, len(traj)):
+            jump = math.hypot(traj[i][0] - traj[i - 1][0],
+                              traj[i][1] - traj[i - 1][1])
+            if jump > max_jump:
+                max_jump = jump
+        return max_jump
+
+    def _should_skip_smoothing(self, traj):
+        if len(traj) < 4:
+            return None
+        if self._count_motion_reversals(traj) > 0:
+            return "gear_cusp"
+        if self._max_path_jump(traj) > 0.20:
+            return "path_jump"
+        return None
 
     # ── main loop ──────────────────────────────────────────────
     def run(self):
@@ -184,6 +248,7 @@ class App:
                 self.planning_mode = (self.planning_mode + 1) % 3
                 self.path = []
                 self.smooth_path = []
+                self.smooth_skip_reason = None
                 self.finished = False
                 self.last_stats = {}
             elif ev.key == pygame.K_EQUALS or ev.key == pygame.K_PLUS:
@@ -194,6 +259,7 @@ class App:
                 self.no_corridor = not self.no_corridor
                 self.path = []
                 self.smooth_path = []
+                self.smooth_skip_reason = None
                 self.finished = False
                 self.last_stats = {}
             elif ev.key == pygame.K_p:
@@ -217,6 +283,7 @@ class App:
                 self.sx, self.sy = wx, wy
                 self.path = []
                 self.smooth_path = []
+                self.smooth_skip_reason = None
                 self.rs_traj = []
                 self.finished = False
                 self.dragging = True
@@ -244,6 +311,7 @@ class App:
                 self.sx = max(VIEW_X_MIN, min(VIEW_X_MAX, wx))
                 self.sy = max(VIEW_Y_MIN, min(VIEW_Y_MAX, wy))
             self.path = []
+            self.smooth_skip_reason = None
             self.finished = False
 
     def _update(self, dt):
@@ -278,6 +346,7 @@ class App:
 
             if moved:
                 self.path = []
+                self.smooth_skip_reason = None
                 self.finished = False
 
         if self.animating:
@@ -332,6 +401,7 @@ class App:
             )
         self.planning = False
         self.last_stats = st
+        self.smooth_skip_reason = None
 
         if not ok:
             if st.get('out_of_range'):
@@ -383,10 +453,22 @@ class App:
                 pts_per_act = len(traj) // len(acts)
                 self.stage_split_idx = stage1_len * pts_per_act
 
-        # ── 拼接 RS 解析扩展尾段 ────────────────────────────────────
-        self.rs_traj = rs_traj or []
-        if self.rs_traj:
-            traj.extend(self.rs_traj[1:])
+        level = st.get('level', '') or ''
+        full_traj_level = (
+            level == 'L1_pure_rs'
+            or level == 'L1_5_milestone_rs'
+            or level.startswith('L1_8_2d_skeleton')
+        )
+
+        # ── 拼接规划器返回的轨迹 ────────────────────────────────────
+        if full_traj_level:
+            self.rs_traj = []
+            if rs_traj:
+                traj.extend(rs_traj[1:])
+        else:
+            self.rs_traj = rs_traj or []
+            if self.rs_traj:
+                traj.extend(self.rs_traj[1:])
 
         # ── 如果是纯 RS 模式，重建 RS 轨迹 ────────────────────────────────────
         if self.planning_mode == 2:
@@ -403,16 +485,18 @@ class App:
             
             # ── 可选 B 样条平滑 ─────────────────────────────────────────
             if _SMOOTH_AVAILABLE and len(traj) >= 4:
-                self.smooth_path = smooth_mod.smooth_path(traj)
+                self.smooth_skip_reason = self._should_skip_smoothing(traj)
+                if self.smooth_skip_reason is None:
+                    self.smooth_path = smooth_mod.smooth_path(traj)
+                else:
+                    self.smooth_path = []
             else:
                 self.smooth_path = []
 
             self.anim_i = 0
             self.animating = True
 
-        tags = []
-        if self.rs_traj:      tags.append("RS Expand")
-        if st.get('two_stage'): tags.append("2-Stage")
+        tags = self._planner_tags()
         tag_str = "  [{}]".format(", ".join(tags)) if tags else ""
         n_steps = len(acts) if acts else 0
         self.msg = "Found: {} acts  |  {} expanded  |  {}ms{}".format(
@@ -425,6 +509,7 @@ class App:
         self.finished = False
         self.path = []
         self.smooth_path = []
+        self.smooth_skip_reason = None
         self.rs_traj = []
         self.stage_split_idx = None
         self.anim_i = 0
@@ -792,8 +877,12 @@ class App:
             self.screen.blit(surf, (x + pad, y + 2))
             return x + bg.get_width() + 6
 
-        smooth_label = "Smooth ON" if self.use_smooth else "Smooth OFF"
-        smooth_col   = (200, 120, 30) if self.use_smooth else (140, 140, 150)
+        if self.use_smooth and self.smooth_skip_reason:
+            smooth_label = "Smooth Skip"
+            smooth_col = (140, 140, 150)
+        else:
+            smooth_label = "Smooth ON" if self.use_smooth else "Smooth OFF"
+            smooth_col   = (200, 120, 30) if self.use_smooth else (140, 140, 150)
 
         cx_badge = SCREEN_WIDTH // 2 - 220
         cx_badge = badge(heur_label, heur_col, cx_badge, bar_y + 8)
@@ -802,10 +891,18 @@ class App:
         cx_badge = badge(corr_label, corr_col, cx_badge, bar_y + 8)
         cx_badge = badge(smooth_label, smooth_col, cx_badge, bar_y + 8)
 
-        if self.rs_traj:
-            cx_badge = badge("RS Expand", (140, 60, 200), cx_badge, bar_y + 8)
-        if self.last_stats.get('two_stage'):
-            badge("2-Stage", (30, 150, 130), cx_badge, bar_y + 8)
+        badge_colors = {
+            "Pure RS": (140, 60, 200),
+            "Milestone RS": (180, 110, 40),
+            "2D Skeleton": (40, 130, 190),
+            "Goal RS": (120, 90, 180),
+            "RS Expand": (140, 60, 200),
+            "K-turn Rescue": (200, 110, 30),
+            "2-Stage": (30, 150, 130),
+            "Raw Only": (110, 110, 130),
+        }
+        for tag in self._planner_tags():
+            cx_badge = badge(tag, badge_colors.get(tag, (120, 120, 140)), cx_badge, bar_y + 8)
 
         # Last stats row
         if self.last_stats:

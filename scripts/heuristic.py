@@ -53,7 +53,6 @@ class DijkstraGrid:
         
         all_obstacles = list(obstacles) if obstacles else []
         all_obstacles.extend(boundary_obs)
-        print("DEBUG: len(all_obstacles) =", len(all_obstacles))
         
         for obs in all_obstacles:
             if isinstance(obs, tuple):

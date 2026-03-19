@@ -179,6 +179,11 @@ _QM3_X_BACKTRACK_EXTRA = 3.0
 _QM4_BEHIND_WALL_PTS_MAX = 5
 _QM5_RS_DETOUR_MAX = 4.0
 _QM6_GEAR_SHIFT_MAX = 8
+_RESCUE_SEED_MAX_ACTS = 96
+_RESCUE_SEED_MAX_LEN = 8.0
+_RESCUE_SEED_MAX_RATIO = 2.8
+_RESCUE_SEED_MAX_EXTRA_Y = 2.5
+_RESCUE_SEED_MAX_X_EXTRA = 2.5
 
 
 def _count_gear_shifts(acts):
@@ -200,6 +205,47 @@ def _trajectory_length(traj):
         math.hypot(traj[i][0] - traj[i - 1][0], traj[i][1] - traj[i - 1][1])
         for i in range(1, len(traj))
     )
+
+
+def _check_rescue_seed_quality(start_x, start_y, start_th, acts, precomp_prim):
+    """
+    Rescue seed is only meant to smooth small geometric discontinuities.
+    If the seed itself is long or highly wandering, it should fall back to A*
+    instead of being treated as a cheap shortcut.
+    """
+    if not acts:
+        return False, "empty", {}
+
+    traj = simulate_path(start_x, start_y, start_th, acts, precomp_prim)
+    geom_len = _trajectory_length(traj)
+    direct_goal = math.hypot(start_x - RS_GOAL_X, start_y - RS_GOAL_Y)
+    shifts = _count_gear_shifts(acts)
+    max_abs_y = max(abs(p[1]) for p in traj)
+    max_x = max(p[0] for p in traj)
+
+    allowed_len = max(_RESCUE_SEED_MAX_LEN, direct_goal * _RESCUE_SEED_MAX_RATIO)
+    allowed_y = max(abs(start_y), abs(RS_GOAL_Y)) + _RESCUE_SEED_MAX_EXTRA_Y
+    allowed_x = start_x + _RESCUE_SEED_MAX_X_EXTRA
+    metrics = {
+        'acts': len(acts),
+        'shifts': shifts,
+        'geom_len': round(geom_len, 3),
+        'max_abs_y': round(max_abs_y, 3),
+        'max_x': round(max_x, 3),
+        'allowed_len': round(allowed_len, 3),
+        'allowed_y': round(allowed_y, 3),
+        'allowed_x': round(allowed_x, 3),
+    }
+
+    if len(acts) > _RESCUE_SEED_MAX_ACTS:
+        return False, "act_count", metrics
+    if geom_len > allowed_len + _QUALITY_EPS:
+        return False, "geom_len", metrics
+    if max_abs_y > allowed_y + _QUALITY_EPS:
+        return False, "max_abs_y", metrics
+    if max_x > allowed_x + _QUALITY_EPS:
+        return False, "max_x", metrics
+    return True, "ok", metrics
 
 
 def _check_l18_quality(start_x, start_y, start_th, acts, rs_traj, precomp_prim):
@@ -528,6 +574,45 @@ def _phase0_turnaround(mx, my, mth, precomp_prim, no_corridor, fast_obstacles):
     return acts, mx, my, mth
 
 
+def _build_kturn_seed(x0, y0, theta0, precomp_prim, no_corridor,
+                      fast_obstacles, dijkstra_grid, target_y_max=None):
+    """
+    Build a prepositioned seed even for cases that normally skip K-turn.
+
+    Some simple single-obstacle scenes are geometrically brittle: a tiny lateral
+    perturbation flips the raw-start L1.8 stitching from success to failure.
+    Returning one rescued seed smooths that discontinuity without forcing every
+    easy case through K-turn first.
+    """
+    mx, my, mth = x0, y0, theta0
+    seed_acts = []
+
+    ok1_greedy, acts1_greedy, mx2, my2, mth2 = _k_turn_preposition_obs(
+        mx, my, mth, precomp_prim, no_corridor, fast_obstacles,
+        dijkstra_grid=dijkstra_grid, target_y_max=target_y_max)
+    if ok1_greedy and acts1_greedy:
+        seed_acts.extend(acts1_greedy)
+        mx, my, mth = mx2, my2, mth2
+
+    if abs(my) > 0.15:
+        s15_x_ceil = None
+        if fast_obstacles:
+            for obs_min_x, *_ in fast_obstacles:
+                if mx < obs_min_x:
+                    cand = obs_min_x - 0.1
+                    if s15_x_ceil is None or cand < s15_x_ceil:
+                        s15_x_ceil = cand
+        ok15, acts15, mx15, my15, mth15 = _k_turn_preposition_obs(
+            mx, my, mth, precomp_prim, no_corridor, fast_obstacles,
+            dijkstra_grid=dijkstra_grid, ignore_obs_for_y_range=True,
+            target_y_max=target_y_max, x_ceil=s15_x_ceil)
+        if ok15 and acts15:
+            seed_acts.extend(acts15)
+            mx, my, mth = mx15, my15, mth15
+
+    return seed_acts, mx, my, mth
+
+
 # ═══════════════════════════════════════════════════════════════════════
 # Main planner v2
 # ═══════════════════════════════════════════════════════════════════════
@@ -675,6 +760,11 @@ def plan_path_robust_obs_v2(x0, y0, theta0, precomp_prim,
     # A* with fine-grained primitives (~0.007m lateral/step) cannot efficiently
     # detour around obstacles > 0.5m.
     run_2d_skeleton = bool(obstacles)
+    simple_obs_fast_path = bool(
+        skip_kturn and fast_obstacles is not None and len(fast_obstacles) <= 2
+    )
+    rescue_acts = None
+    rescue_seed = None
     # Track best L1.8 candidates separately: QM-passing vs any collision-free
     _l18_qm_traj = None
     _l18_qm_acts = None
@@ -684,6 +774,35 @@ def plan_path_robust_obs_v2(x0, y0, theta0, precomp_prim,
     _l18_any_spc = None
     _l18_any_len = float('inf')
     if run_2d_skeleton:
+        def _try_l18_seed(sx2, sy2, sth2, seed_acts):
+            nonlocal _l18_qm_traj, _l18_qm_acts, _l18_qm_spc
+            nonlocal _l18_any_traj, _l18_any_acts, _l18_any_spc, _l18_any_len
+            if time.perf_counter() > l18_deadline:
+                return False
+            for spc in [2.5, 1.5, 1.0]:
+                if time.perf_counter() > l18_deadline:
+                    break
+                fb2d_ok, fb2d_traj = plan_2d_fallback(
+                    dijkstra_grid, sx2, sy2, sth2, coll_relaxed,
+                    spacing=spc, max_rs_paths=12, obstacles=obstacles,
+                    deadline=l18_deadline)
+                if fb2d_ok and not _path_goes_behind_wall(fb2d_traj):
+                    qm_ok, qm_reason = _check_l18_quality(
+                        x0, y0, theta0, seed_acts, fb2d_traj, precomp_prim)
+                    if qm_ok:
+                        _l18_qm_traj = fb2d_traj
+                        _l18_qm_acts = seed_acts
+                        _l18_qm_spc = spc
+                        return True
+                    stats['l18_reject_reason'] = qm_reason
+                    tlen = _trajectory_length(fb2d_traj)
+                    if tlen < _l18_any_len:
+                        _l18_any_traj = fb2d_traj
+                        _l18_any_acts = seed_acts
+                        _l18_any_spc = spc
+                        _l18_any_len = tlen
+            return False
+
         # Exp-8: Reduced L1.8 budget from 30%/8s → 20%/5s.
         # Diagnostic shows RS stitching fails for 10/11 timeout cases and
         # takes 40-60s when it does succeed — most budget is wasted.
@@ -700,58 +819,84 @@ def plan_path_robust_obs_v2(x0, y0, theta0, precomp_prim,
             if (mx, my) != (x0, y0):
                 starts_2d.append((x0, y0, theta0, []))
         for sx2, sy2, sth2, prefix_acts in starts_2d:
-            if time.perf_counter() > l18_deadline:
+            if _try_l18_seed(sx2, sy2, sth2, prefix_acts):
                 break
-            for spc in [2.5, 1.5, 1.0]:
-                if time.perf_counter() > l18_deadline:
-                    break
-                fb2d_ok, fb2d_traj = plan_2d_fallback(
-                    dijkstra_grid, sx2, sy2, sth2, coll_relaxed,
-                    spacing=spc, max_rs_paths=12, obstacles=obstacles,
-                    deadline=l18_deadline)
-                if fb2d_ok and not _path_goes_behind_wall(fb2d_traj):
-                    qm_ok, qm_reason = _check_l18_quality(
-                        x0, y0, theta0, prefix_acts, fb2d_traj, precomp_prim)
-                    if qm_ok:
-                        # QM-passing path found – accept immediately
-                        _l18_qm_traj = fb2d_traj
-                        _l18_qm_acts = prefix_acts
-                        _l18_qm_spc = spc
-                        break  # inner loop
-                    else:
-                        # Track best collision-free path as fallback
-                        stats['l18_reject_reason'] = qm_reason
-                        tlen = _trajectory_length(fb2d_traj)
-                        if tlen < _l18_any_len:
-                            _l18_any_traj = fb2d_traj
-                            _l18_any_acts = prefix_acts
-                            _l18_any_spc = spc
-                            _l18_any_len = tlen
             if _l18_qm_traj is not None:
                 break  # outer loop
+
+        # Simple-obstacle fast path is intentionally brittle for speed: it skips
+        # K-turn entirely. If the primary L1.8 attempt finds no QM-passing path,
+        # build one rescued seed and hand it to L2 instead of forcing a brittle
+        # non-QM shortcut to count as success.
+        if (_l18_qm_traj is None
+                and simple_obs_fast_path
+                and (abs(mth) > 0.9 or abs(my) > PREAPPROACH_Y_MAX)):
+            rescue_t0 = time.perf_counter()
+            rescue_acts, rescue_mx, rescue_my, rescue_mth = _build_kturn_seed(
+                x0, y0, theta0, precomp_prim, no_corridor,
+                fast_obstacles, dijkstra_grid, target_y_max=obs_tight_y)
+            rescue_ms = round((time.perf_counter() - rescue_t0) * 1000.0, 1)
+            if rescue_acts:
+                rescue_ok, rescue_reason, rescue_metrics = _check_rescue_seed_quality(
+                    x0, y0, theta0, rescue_acts, precomp_prim)
+                if rescue_ok:
+                    rescue_seed = (rescue_mx, rescue_my, rescue_mth)
+                    stats['simple_obs_kturn_rescue'] = True
+                    stats['simple_obs_kturn_rescue_ms'] = rescue_ms
+                    stats['simple_obs_kturn_rescue_seed'] = rescue_seed
+                    stats['simple_obs_kturn_rescue_shifts'] = _count_gear_shifts(rescue_acts)
+                    stats['simple_obs_kturn_rescue_deferred_to_l2'] = True
+                else:
+                    stats['simple_obs_kturn_rescue_rejected'] = rescue_reason
+                    stats['simple_obs_kturn_rescue_candidate'] = rescue_metrics
+                    rescue_acts = None
 
         # Return the best L1.8 path: prefer QM-passing, fallback to collision-free
         if _l18_qm_traj is not None:
             total_ms = round((time.perf_counter() - t_robust) * 1000.0, 1)
+            level = f'L1_8_2d_skeleton_sp{_l18_qm_spc}'
+            if stats.get('simple_obs_kturn_rescue'):
+                level += '_rescue'
             stats.update(
                 expanded=0, elapsed_ms=total_ms,
-                level=f'L1_8_2d_skeleton_sp{_l18_qm_spc}',
+                level=level,
                 use_rs=use_rs, no_corridor=no_corridor,
                 two_stage=True, stage1_ms=t1_ms,
             )
             return True, _l18_qm_acts, _l18_qm_traj
         if _l18_any_traj is not None:
-            total_ms = round((time.perf_counter() - t_robust) * 1000.0, 1)
-            stats.update(
-                expanded=0, elapsed_ms=total_ms,
-                level=f'L1_8_2d_skeleton_sp{_l18_any_spc}',
-                use_rs=use_rs, no_corridor=no_corridor,
-                two_stage=True, stage1_ms=t1_ms,
-            )
-            return True, _l18_any_acts, _l18_any_traj
+            stats['l18_non_qm_candidate'] = True
+            stats['l18_non_qm_spc'] = _l18_any_spc
+            stats['l18_non_qm_path_len'] = round(_l18_any_len, 3)
+            if not simple_obs_fast_path:
+                total_ms = round((time.perf_counter() - t_robust) * 1000.0, 1)
+                level = f'L1_8_2d_skeleton_sp{_l18_any_spc}'
+                if stats.get('simple_obs_kturn_rescue'):
+                    level += '_rescue'
+                stats.update(
+                    expanded=0, elapsed_ms=total_ms,
+                    level=level,
+                    use_rs=use_rs, no_corridor=no_corridor,
+                    two_stage=True, stage1_ms=t1_ms,
+                )
+                return True, _l18_any_acts, _l18_any_traj
+            stats['l18_non_qm_deferred'] = True
 
-    # ── Level-2: Multi-stage A* from K-turn position ──
-    _, mid_d_goal = dijkstra_grid.get_heuristic(mx, my)
+    # ── Level-2: Multi-stage A* from selected seed ──
+    l2_mx, l2_my, l2_mth = mx, my, mth
+    l2_prefix_acts = prefix_acts
+    l2_start_kind = 'primary'
+    l2_prefix_too_many_shifts = prefix_too_many_shifts
+    if rescue_acts and rescue_seed is not None:
+        l2_prefix_acts = rescue_acts
+        l2_mx, l2_my, l2_mth = rescue_seed
+        l2_start_kind = 'rescue'
+        # Rescue seed is explicitly built to hand off to downstream search,
+        # so don't skip L2 solely because the prefix itself shifts often.
+        l2_prefix_too_many_shifts = False
+    stats['l2_start_kind'] = l2_start_kind
+
+    _, mid_d_goal = dijkstra_grid.get_heuristic(l2_mx, l2_my)
     total_expanded = 0  # accumulate across all A* stages for diagnostics
 
     # Exp-8: Increased A* budgets from [5,8,15] → [6,10,18].
@@ -759,7 +904,7 @@ def plan_path_robust_obs_v2(x0, y0, theta0, precomp_prim,
     # and L1.8 (≤5s), A* gets ~22-25s of real wall-clock time.
     STAGE_TIME_BUDGETS = [6.0, 10.0, 18.0]  # fast, robust, aggressive
 
-    if not prefix_too_many_shifts:
+    if not l2_prefix_too_many_shifts:
         for stage_idx, stage in enumerate(RECOVERY_STAGES):
             stage_start = time.perf_counter()
             # Calculate per-stage deadline
@@ -778,11 +923,11 @@ def plan_path_robust_obs_v2(x0, y0, theta0, precomp_prim,
                 dijkstra_grid, mid_d_goal,
                 allow_uphill=stage['allow_uphill'], h_weight=stage['h_weight'])
 
-            dist_x = max(0.0, mx - 2.1)
+            dist_x = max(0.0, l2_mx - 2.1)
             dyn_prim = max(stage['prim_limit'], 30 + int(dist_x / 0.1))
 
             ok2, acts2, rs_traj = astar_core.plan_path(
-                mx, my, mth, precomp_prim,
+                l2_mx, l2_my, l2_mth, precomp_prim,
                 collision_fn=coll_fn, heuristic_fn=heuristic,
                 rs_expand_fn=rs_expand, stats=st,
                 _goal_xmin=0.5, _goal_xmax=8.0,
@@ -816,15 +961,16 @@ def plan_path_robust_obs_v2(x0, y0, theta0, precomp_prim,
                             if not verified:
                                 continue
 
-                final_acts = phase0_acts + acts1 + stage15_acts + (acts2 or [])
+                final_acts = l2_prefix_acts + (acts2 or [])
                 total_ms = round((time.perf_counter() - t_robust) * 1000.0, 1)
                 stats.update(
                     expanded=st.get('expanded', 0), elapsed_ms=total_ms,
                     use_rs=use_rs, no_corridor=no_corridor,
                     rs_expansion=st.get('rs_expansion', False),
                     two_stage=True, stage1_ms=t1_ms,
-                    stage1_end=(mx, my, mth),
+                    stage1_end=(l2_mx, l2_my, l2_mth),
                     goal_pos=st.get('goal_pos'),
+                    l2_start_kind=l2_start_kind,
                     level=f'L2_{stage["name"]}',
                     recovery_stage=stage_idx,
                 )

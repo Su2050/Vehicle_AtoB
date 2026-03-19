@@ -1,6 +1,19 @@
 import math
+import os
+import sys
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from primitives import init_primitives
 from planner_obs import plan_path_robust_obs, _preprocess_obstacles, _make_collision_fn
+try:
+    from planner_obs_v2 import (
+        plan_path_robust_obs_v2,
+        _check_l18_quality,
+        _check_rescue_seed_quality,
+    )
+except ImportError:
+    plan_path_robust_obs_v2 = None
+    _check_l18_quality = None
+    _check_rescue_seed_quality = None
 
 
 def test_planner_obs_interface():
@@ -70,6 +83,57 @@ def test_planner_obs_stats_keys():
     plan_path_robust_obs(2.5, 0.0, 0.0, prims, use_rs=True, stats=st, obstacles=obs)
     assert 'elapsed_ms' in st
 
+def test_planner_obs_v2_simple_obstacle_kturn_rescue_handoff_to_l2():
+    """简单单障碍的 rescue 应作为 L2 seed，而不是直接返回 L1.8 非QM轨迹。"""
+    if plan_path_robust_obs_v2 is None:
+        return
+    prims = init_primitives()
+    obs = [{'x': 3.78, 'y': -1.42, 'w': 0.50, 'h': 1.94}]
+    st = {}
+    ok, acts, traj = plan_path_robust_obs_v2(
+        4.79, -0.70, math.radians(84.7), prims,
+        use_rs=True, stats=st, obstacles=obs,
+        rs_expansion_radius=0.8, _time_budget=5.0,
+    )
+    assert st.get('simple_obs_kturn_rescue') is True, st
+    assert st.get('simple_obs_kturn_rescue_deferred_to_l2') is True, st
+    assert st.get('l2_start_kind') == 'rescue', st
+    assert not str(st.get('level', '')).startswith('L1_8_2d_skeleton'), st
+    assert ok is False or str(st.get('level', '')).startswith('L2_'), st
+
+
+def test_planner_obs_v2_l18_success_must_pass_qm():
+    """任何直接返回的 L1.8 成功都必须通过 QM。"""
+    if plan_path_robust_obs_v2 is None or _check_l18_quality is None:
+        return
+    prims = init_primitives()
+    obs = [{'x': 3.78, 'y': -1.42, 'w': 0.50, 'h': 1.94}]
+    st = {}
+    ok, acts, traj = plan_path_robust_obs_v2(
+        4.85, -0.70, math.radians(84.7), prims,
+        use_rs=True, stats=st, obstacles=obs,
+        rs_expansion_radius=0.8, _time_budget=5.0,
+    )
+    assert ok is True, st
+    assert str(st.get('level', '')).startswith('L1_8_2d_skeleton'), st
+    qm_ok, qm_reason = _check_l18_quality(
+        4.85, -0.70, math.radians(84.7), acts or [], traj or [], prims)
+    assert qm_ok is True, (qm_reason, st)
+    assert qm_reason == 'ok'
+
+
+def test_planner_obs_v2_rescue_seed_quality_rejects_overlong_seed():
+    """Rescue seed 只能用于短小补救，超长前缀应被拒绝。"""
+    if _check_rescue_seed_quality is None:
+        return
+    prims = init_primitives()
+    acts = [('F', 0.0, 1.5)] * 120
+    ok, reason, metrics = _check_rescue_seed_quality(
+        4.79, -0.70, math.radians(84.7), acts, prims)
+    assert ok is False
+    assert reason in ('act_count', 'geom_len')
+    assert metrics.get('acts', 0) == 120
+
 
 if __name__ == "__main__":
     test_planner_obs_interface()
@@ -80,4 +144,7 @@ if __name__ == "__main__":
     test_planner_obs_pure_rs_level1()
     test_planner_obs_out_of_range()
     test_planner_obs_stats_keys()
+    test_planner_obs_v2_simple_obstacle_kturn_rescue_handoff_to_l2()
+    test_planner_obs_v2_l18_success_must_pass_qm()
+    test_planner_obs_v2_rescue_seed_quality_rejects_overlong_seed()
     print("All planner_obs tests passed!")
