@@ -184,6 +184,7 @@ _RESCUE_SEED_MAX_LEN = 8.0
 _RESCUE_SEED_MAX_RATIO = 2.8
 _RESCUE_SEED_MAX_EXTRA_Y = 2.5
 _RESCUE_SEED_MAX_X_EXTRA = 2.5
+_RESCUE_SEED_ALT_Y = 0.35
 
 
 def _count_gear_shifts(acts):
@@ -246,6 +247,84 @@ def _check_rescue_seed_quality(start_x, start_y, start_th, acts, precomp_prim):
     if max_x > allowed_x + _QUALITY_EPS:
         return False, "max_x", metrics
     return True, "ok", metrics
+
+
+def _score_rescue_seed_candidate(seed_d_goal, metrics, my, mth):
+    """
+    Lower score is better. Prefer seeds that materially reduce Dijkstra distance
+    while staying short, compact, and roughly goal-aligned.
+    """
+    return (
+        seed_d_goal * 3.0
+        + metrics.get('geom_len', 0.0) * 0.25
+        + metrics.get('acts', 0) * 0.02
+        + abs(my) * 0.6
+        + abs(mth) * 0.4
+    )
+
+
+def _build_kturn_seed_candidates(x0, y0, theta0, precomp_prim, no_corridor,
+                                 fast_obstacles, dijkstra_grid, target_y_max=None):
+    """
+    Enumerate a few bounded rescue-seed variants and rank the valid ones.
+
+    The failure band near simple obstacles is sensitive to how aggressively the
+    K-turn stage tries to compress lateral error. Trying a tiny candidate set of
+    target_y_max values is enough to recover boundary cases without opening a
+    combinatorial search.
+    """
+    target_opts = []
+    for ty in [target_y_max, _RESCUE_SEED_ALT_Y, PREAPPROACH_Y_MAX]:
+        if ty is None:
+            continue
+        if all(abs(ty - existing) > 1e-9 for existing in target_opts):
+            target_opts.append(ty)
+
+    candidates = []
+    rejected = []
+    seen = set()
+    for ty in target_opts:
+        acts, mx, my, mth = _build_kturn_seed(
+            x0, y0, theta0, precomp_prim, no_corridor,
+            fast_obstacles, dijkstra_grid, target_y_max=ty)
+        if not acts:
+            rejected.append({
+                'target_y_max': round(ty, 3),
+                'reason': 'empty',
+            })
+            continue
+
+        # Small rounding is enough to collapse equivalent variants.
+        key = (len(acts), round(mx, 2), round(my, 2), round(mth, 2))
+        if key in seen:
+            continue
+        seen.add(key)
+
+        rescue_ok, rescue_reason, rescue_metrics = _check_rescue_seed_quality(
+            x0, y0, theta0, acts, precomp_prim)
+        seed_d_goal, _ = dijkstra_grid.get_heuristic(mx, my)
+        candidate = {
+            'acts': acts,
+            'seed': (mx, my, mth),
+            'target_y_max': round(ty, 3),
+            'seed_d_goal': round(seed_d_goal, 3),
+            'reason': rescue_reason,
+            'metrics': rescue_metrics,
+        }
+        if rescue_ok:
+            candidate['score'] = round(
+                _score_rescue_seed_candidate(seed_d_goal, rescue_metrics, my, mth), 3)
+            candidates.append(candidate)
+        else:
+            rejected.append({
+                'target_y_max': round(ty, 3),
+                'reason': rescue_reason,
+                'metrics': rescue_metrics,
+                'seed_d_goal': round(seed_d_goal, 3),
+            })
+
+    candidates.sort(key=lambda c: (c['score'], c['seed_d_goal'], c['metrics'].get('acts', 0)))
+    return candidates, rejected
 
 
 def _check_l18_quality(start_x, start_y, start_th, acts, rs_traj, precomp_prim):
@@ -832,24 +911,32 @@ def plan_path_robust_obs_v2(x0, y0, theta0, precomp_prim,
                 and simple_obs_fast_path
                 and (abs(mth) > 0.9 or abs(my) > PREAPPROACH_Y_MAX)):
             rescue_t0 = time.perf_counter()
-            rescue_acts, rescue_mx, rescue_my, rescue_mth = _build_kturn_seed(
+            rescue_candidates, rescue_rejected = _build_kturn_seed_candidates(
                 x0, y0, theta0, precomp_prim, no_corridor,
                 fast_obstacles, dijkstra_grid, target_y_max=obs_tight_y)
             rescue_ms = round((time.perf_counter() - rescue_t0) * 1000.0, 1)
-            if rescue_acts:
-                rescue_ok, rescue_reason, rescue_metrics = _check_rescue_seed_quality(
-                    x0, y0, theta0, rescue_acts, precomp_prim)
-                if rescue_ok:
-                    rescue_seed = (rescue_mx, rescue_my, rescue_mth)
-                    stats['simple_obs_kturn_rescue'] = True
-                    stats['simple_obs_kturn_rescue_ms'] = rescue_ms
-                    stats['simple_obs_kturn_rescue_seed'] = rescue_seed
-                    stats['simple_obs_kturn_rescue_shifts'] = _count_gear_shifts(rescue_acts)
-                    stats['simple_obs_kturn_rescue_deferred_to_l2'] = True
-                else:
-                    stats['simple_obs_kturn_rescue_rejected'] = rescue_reason
-                    stats['simple_obs_kturn_rescue_candidate'] = rescue_metrics
-                    rescue_acts = None
+            if rescue_candidates:
+                best = rescue_candidates[0]
+                rescue_acts = best['acts']
+                rescue_seed = best['seed']
+                stats['simple_obs_kturn_rescue'] = True
+                stats['simple_obs_kturn_rescue_ms'] = rescue_ms
+                stats['simple_obs_kturn_rescue_seed'] = rescue_seed
+                stats['simple_obs_kturn_rescue_shifts'] = _count_gear_shifts(rescue_acts)
+                stats['simple_obs_kturn_rescue_target_y_max'] = best['target_y_max']
+                stats['simple_obs_kturn_rescue_seed_d_goal'] = best['seed_d_goal']
+                stats['simple_obs_kturn_rescue_score'] = best['score']
+                stats['simple_obs_kturn_rescue_deferred_to_l2'] = True
+                stats['simple_obs_kturn_rescue_alternatives'] = max(0, len(rescue_candidates) - 1)
+            else:
+                rescue_acts = None
+                if rescue_rejected:
+                    best_rejected = min(
+                        rescue_rejected,
+                        key=lambda r: (r.get('seed_d_goal', float('inf')),
+                                       r.get('metrics', {}).get('acts', float('inf'))))
+                    stats['simple_obs_kturn_rescue_rejected'] = best_rejected.get('reason')
+                    stats['simple_obs_kturn_rescue_candidate'] = best_rejected
 
         # Return the best L1.8 path: prefer QM-passing, fallback to collision-free
         if _l18_qm_traj is not None:

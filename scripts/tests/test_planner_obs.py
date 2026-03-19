@@ -4,13 +4,16 @@ import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from primitives import init_primitives
 from planner_obs import plan_path_robust_obs, _preprocess_obstacles, _make_collision_fn
+from heuristic import DijkstraGrid
 try:
     from planner_obs_v2 import (
+        _build_kturn_seed_candidates,
         plan_path_robust_obs_v2,
         _check_l18_quality,
         _check_rescue_seed_quality,
     )
 except ImportError:
+    _build_kturn_seed_candidates = None
     plan_path_robust_obs_v2 = None
     _check_l18_quality = None
     _check_rescue_seed_quality = None
@@ -102,6 +105,23 @@ def test_planner_obs_v2_simple_obstacle_kturn_rescue_handoff_to_l2():
     assert ok is False or str(st.get('level', '')).startswith('L2_'), st
 
 
+def test_planner_obs_v2_multi_rescue_candidates_pick_relaxed_band():
+    """多候选 rescue 应能在边界点选到较松的 target_y_max 候选。"""
+    if _build_kturn_seed_candidates is None:
+        return
+    prims = init_primitives()
+    obs = [{'x': 3.78, 'y': -1.42, 'w': 0.50, 'h': 1.94}]
+    fast = _preprocess_obstacles(obs)
+    dg = DijkstraGrid(2.10, 0.0, inflate_radius=0.30)
+    dg.build_map(obs, start_x=4.55, start_y=-0.70)
+    candidates, rejected = _build_kturn_seed_candidates(
+        4.55, -0.70, math.radians(84.7), prims,
+        False, fast, dg, target_y_max=0.2)
+    assert candidates, (candidates, rejected)
+    assert candidates[0].get('target_y_max') == 0.35, candidates
+    assert candidates[0].get('reason') == 'ok', candidates
+
+
 def test_planner_obs_v2_l18_success_must_pass_qm():
     """任何直接返回的 L1.8 成功都必须通过 QM。"""
     if plan_path_robust_obs_v2 is None or _check_l18_quality is None:
@@ -145,6 +165,7 @@ if __name__ == "__main__":
     test_planner_obs_out_of_range()
     test_planner_obs_stats_keys()
     test_planner_obs_v2_simple_obstacle_kturn_rescue_handoff_to_l2()
+    test_planner_obs_v2_multi_rescue_candidates_pick_relaxed_band()
     test_planner_obs_v2_l18_success_must_pass_qm()
     test_planner_obs_v2_rescue_seed_quality_rejects_overlong_seed()
     print("All planner_obs tests passed!")
